@@ -68,45 +68,45 @@ class VirgoSpawner(Spawner):
       """
       Options form that is presented to the user after login, before spawning the single-user notebook
       """
-      async def render_form(spawner):
-         maxcpu = spawner.slurm_max_requestable_CPUs
-         default_partition = spawner.slurm_default_partition
-         default_reservation = spawner.slurm_default_reservation
+      
+      maxcpu = self.slurm_max_requestable_CPUs
+      default_partition = self.slurm_default_partition
+      default_reservation = self.slurm_default_reservation
 
-         return f"""
+      return f"""
 
-         <div class="form-group">
-            <label for="reservation">Slurm Reservation</label>
-            <input name="reservation" class="form-control" default="{default_reservation}"></input>
-         </div>
-         <br />
-         <div class="form-group">
-            <label for="partition">Slurm Partition (main, long)</label>
-            <input name="partition" class="form-control" default="{default_partition}"></input>
-         </div>
-         <br />
-         <div class="form-group">
-            <label for="workdir">Your working directory on /lustre / Ihre Arbeitsverzeichnis auf Lustre</label>
-            <input name="workdir" class="form-control" placeholder="e.g. /lustre/group/username/..."></input>
-         </div>
-         <br />
-         <div class="form-group">
-            <label>Does your task require a GPU? / Braucht Ihre Anwendung einen Grafikprozessor?</label>
-            &nbsp; <label for="gpu_yes"><input name="req_GPU" id="gpu_yes" type="radio" value="1"> Yes</label>
-            &nbsp; <label for="gpu_no"> <input name="req_GPU" id="gpu_no"  type="radio" value="0" checked> No</label>
-         </div>
-         <br />
-         <div class="form-group">
-            <label for="num_cpus">Number of CPUs to assign to job / Anzahl Prozessoren (1-{maxcpu})</label>
-            <input name="num_cpus" class="form-control" type="number" value="1" min="1" max="{maxcpu}" onkeyup="if(value>{maxcpu}) value = {maxcpu}; if(value<0 || value == '0') value=1"/>
-         </div>
-         <br />
-         <div class="form-group">
-            <label for="ssh_keyphrase">SSH keyphrase</label>
-            <input name="ssh_keyphrase" class="form-control" type="password" />
-         </div>
-         """
-      return render_form
+      <div class="form-group">
+         <label for="reservation">Slurm Reservation</label>
+         <input name="reservation" class="form-control" value="{default_reservation}"></input>
+      </div>
+      <br />
+      <div class="form-group">
+         <label for="partition">Slurm Partition (main, long)</label>
+         <input name="partition" class="form-control" value="{default_partition}"></input>
+      </div>
+      <br />
+      <div class="form-group">
+         <label for="workdir">Your working directory on /lustre / Ihre Arbeitsverzeichnis auf Lustre</label>
+         <input name="workdir" class="form-control" placeholder="e.g. /lustre/group/username/..."></input>
+      </div>
+      <br />
+      <div class="form-group">
+         <label>Does your task require a GPU? / Braucht Ihre Anwendung einen Grafikprozessor?</label>
+         &nbsp; <label for="gpu_yes"><input name="req_GPU" id="gpu_yes" type="radio" value="1"> Yes</label>
+         &nbsp; <label for="gpu_no"> <input name="req_GPU" id="gpu_no"  type="radio" value="0" checked> No</label>
+      </div>
+      <br />
+      <div class="form-group">
+         <label for="num_cpus">Number of CPUs to assign to job / Anzahl Prozessoren (1-{maxcpu})</label>
+         <input name="num_cpus" class="form-control" type="number" value="1" min="1" max="{maxcpu}" onkeyup="if(value>{maxcpu}) value = {maxcpu}; if(value<0 || value == '0') value=1"/>
+      </div>
+      <br />
+      <div class="form-group">
+         <label for="ssh_keyphrase">SSH keyphrase</label>
+         <input name="ssh_keyphrase" class="form-control" type="password" />
+      </div>
+      """
+      
 
    def options_from_form(self, formdata):
       """
@@ -211,7 +211,7 @@ class VirgoSpawner(Spawner):
       
       slurmscript += f"srun --output={workdir}/jupy_out.out --chdir={workdir}  --jobid=$JOBID --job-name='jupyterhub_singleuser' -- "
 
-      slurmscript += " /usr/bin/apptainer exec -B /tmp -B /lustre {self.apptainer_path} /opt/conda/bin/jupyterhub-singleuser >> {workdir}/jupyterlog.log 2>&1 &); "
+      slurmscript += f" /usr/bin/apptainer exec -B /tmp -B /lustre {self.apptainer_path} /opt/conda/bin/jupyterhub-singleuser >> {workdir}/jupyterlog.log 2>&1 &); "
  
       slurmscript += "if [ $? != 0 ]; then scancel $JOBID; exit 3; fi; " # Tear down allocation if creation of single-user notebook failed
       slurmscript += "echo $JOBID $HOSTNAME $PORT;"
