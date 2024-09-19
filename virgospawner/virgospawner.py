@@ -143,8 +143,15 @@ class VirgoSpawner(Spawner):
             f"Invalid number of CPUs given / Ungültige Anzahl von CPUs gegeben (1-32)"
          )
 
+      options_whitelist=r'^[a-zA-Z0-9/.\-_]*$'
+      # Test user strings against whitelisted characters and throw error if invalid
+      for item in self.user_options:
+         if not re.match(options_whitelist, str(self.user_options[item])) and 'keyphrase' not in item:
+            raise web.HTTPError(500, "Value given for option {} is invalid".format(item))
+
+
       # Sanitise Unicode inputs to be used in bash scripts with shlex.quote()
-      workdir = (self.user_options['workdir'])
+      workdir = quote(self.user_options['workdir'])
       partition = quote(self.user_options['partition'])
       reservation = quote(self.user_options['reservation'])
       
@@ -175,9 +182,9 @@ class VirgoSpawner(Spawner):
 
       slurmscript +=  f"salloc --no-shell --chdir={workdir} --cpus-per-task={num_cpus}"
       if self.user_options['partition']: 
-        slurmscript += f" --partition={self.user_options['partition']}"
+        slurmscript += f" --partition={partition}"
       if self.user_options['reservation']:
-         slurmscript += f" --reservation={self.user_options['reservation']}"
+         slurmscript += f" --reservation={reservation}"
       if self.user_options['req_GPU']:
          slurmscript += " --constraint=mi100 --gres=gpu:1"
       if self.slurm_chgroup: # terminate chgroup command if invoked
