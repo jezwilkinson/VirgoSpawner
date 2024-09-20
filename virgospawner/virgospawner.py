@@ -180,7 +180,7 @@ class VirgoSpawner(Spawner):
       if self.slurm_chgroup: # DEBUG: Switch GID for allocation if required
          slurmscript += f"sg {self.slurm_chgroup} -c '"
 
-      slurmscript +=  f"salloc --no-shell --chdir={workdir} --cpus-per-task={num_cpus}"
+      slurmscript +=  f"salloc --no-shell --job-name=jupyterhub_reservation --chdir={workdir} --cpus-per-task={num_cpus}"
       if self.user_options['partition']: 
         slurmscript += f" --partition={partition}"
       if self.user_options['reservation']:
@@ -191,7 +191,7 @@ class VirgoSpawner(Spawner):
          slurmscript += "'"
       slurmscript += "; "
       slurmscript += "if [ $? != 0 ]; then exit 1; fi ; " ##  check return code from salloc ; if error in allocation, quit here
-      slurmscript += "QUEUE=$(squeue -u $USER -o '%i %N' -S +i | tail -n 1); " ## retrieve last job ID for user
+      slurmscript += f"QUEUE=$(squeue -u {ssh_username} -o '%i %N' -S +i | tail -n 1); " ## retrieve last job ID for user
       slurmscript += "JOBID=$(cut -d' ' -f1 <<< $QUEUE); "
       slurmscript += "HOSTNAME=$(cut -d' ' -f2 <<< $QUEUE); "
 
@@ -217,7 +217,6 @@ class VirgoSpawner(Spawner):
       slurmscript += f" JUPYTER_CONFIG_PATH={workdir}/.jupy/conf "
       
       slurmscript += f"srun --output={workdir}/jupy_out.out --chdir={workdir}  --jobid=$JOBID --job-name='jupyterhub_singleuser' -- "
-
       slurmscript += f" /usr/bin/apptainer exec -B /tmp -B /lustre {self.apptainer_path} /opt/conda/bin/jupyterhub-singleuser >> {workdir}/jupyterlog.log 2>&1 &); "
  
       slurmscript += "if [ $? != 0 ]; then scancel $JOBID; exit 3; fi; " # Tear down allocation if creation of single-user notebook failed
@@ -242,7 +241,7 @@ class VirgoSpawner(Spawner):
          self.slurm_job_hostname = hostname + ".gsi.de"
          self.slurm_job_hostport = int(port)
 
-         self.log.debug("Server was spawned with job ID {} on hostname {}, listening on port {}".format(self.slurm_job_id, self.slurm_job_hostname, self.slurm_job_hostport))
+         self.log.debug("Server for user {} was spawned with job ID {} on hostname {}, listening on port {}".format(self.user.name, self.slurm_job_id, self.slurm_job_hostname, self.slurm_job_hostport))
 
       return (self.slurm_job_hostname, self.slurm_job_hostport)
 
