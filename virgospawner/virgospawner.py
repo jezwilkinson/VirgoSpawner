@@ -191,7 +191,7 @@ class VirgoSpawner(Spawner):
          slurmscript += "'"
       slurmscript += "; "
       slurmscript += "if [ $? != 0 ]; then exit 1; fi ; " ##  check return code from salloc ; if error in allocation, quit here
-      slurmscript += "QUEUE=$(squeue -u $USER -o '%F %N' | tail -n 1); " ## retrieve last job ID for user
+      slurmscript += "QUEUE=$(squeue -u $USER -o '%i %N' -S +i | tail -n 1); " ## retrieve last job ID for user
       slurmscript += "JOBID=$(cut -d' ' -f1 <<< $QUEUE); "
       slurmscript += "HOSTNAME=$(cut -d' ' -f2 <<< $QUEUE); "
 
