@@ -143,17 +143,20 @@ class VirgoSpawner(Spawner):
             f"Invalid number of CPUs given / Ungültige Anzahl von CPUs gegeben (1-32)"
          )
 
-      options_whitelist=r'^[a-zA-Z0-9/.\-_]*$'
+      pathspec_whitelist=r'^[a-zA-Z0-9/.\-_ ]*$'
+      options_whitelist=r'^[a-zA-Z0-9_\-]*$'
       # Test user strings against whitelisted characters and throw error if invalid
       for item in self.user_options:
-         if not re.match(options_whitelist, str(self.user_options[item])) and 'keyphrase' not in item:
-            raise web.HTTPError(500, "Value given for option {} is invalid".format(item))
+         if 'workdir' in item:
+            if not re.match(pathspec_whitelist, str(self.user_options[item])):
+               raise web.HTTPError(500, f"Invalid path given in option {item}")
+         elif not re.match(options_whitelist, str(self.user_options[item])) and 'keyphrase' not in item:
+            raise web.HTTPError(500, f"Value given for option {item} is invalid")
 
 
-      # Sanitise Unicode inputs to be used in bash scripts with shlex.quote()
-      workdir = quote(self.user_options['workdir'])
-      partition = quote(self.user_options['partition'])
-      reservation = quote(self.user_options['reservation'])
+      workdir = self.user_options['workdir']
+      partition = self.user_options['partition']
+      reservation = self.user_options['reservation']
       
       num_cpus = self.user_options['num_cpus']
       
@@ -178,9 +181,9 @@ class VirgoSpawner(Spawner):
 
       slurmscript = ""
       if self.slurm_chgroup: # DEBUG: Switch GID for allocation if required
-         slurmscript += f"sg {self.slurm_chgroup} -c '"
+         slurmscript += f"unset SSH_ORIGINAL_COMMAND; sg {self.slurm_chgroup} -c \""
 
-      slurmscript +=  f"salloc --no-shell --job-name=jupyterhub_reservation --chdir={workdir} --cpus-per-task={num_cpus}"
+      slurmscript +=  f"salloc --no-shell --job-name=jupyterhub_reservation --chdir='{workdir}' --cpus-per-task={num_cpus}"
       if self.user_options['partition']: 
         slurmscript += f" --partition={partition}"
       if self.user_options['reservation']:
@@ -188,19 +191,18 @@ class VirgoSpawner(Spawner):
       if self.user_options['req_GPU']:
          slurmscript += " --constraint=mi100 --gres=gpu:1"
       if self.slurm_chgroup: # terminate chgroup command if invoked
-         slurmscript += "'"
+         slurmscript += "\""
       slurmscript += "; "
       slurmscript += "if [ $? != 0 ]; then exit 1; fi ; " ##  check return code from salloc ; if error in allocation, quit here
       slurmscript += f"QUEUE=$(squeue -u {ssh_username} -o '%i %N' -S +i | tail -n 1); " ## retrieve last job ID for user
       slurmscript += "JOBID=$(cut -d' ' -f1 <<< $QUEUE); "
       slurmscript += "HOSTNAME=$(cut -d' ' -f2 <<< $QUEUE); "
 
-      # Step 0
-      slurmscript += f"PORT=$( srun --chdir={workdir} --jobid=$JOBID --job-name='jupyterhub_port' -- /usr/bin/apptainer exec {self.apptainer_path} /opt/conda/bin/python3 -c  'from jupyterhub.utils import random_port; print(random_port())'); "
-      slurmscript += "if [ $? != 0 ]; then scancel $JOBID; exit 2; fi; " # Tear down allocation and halt spawning if port allocation failed
+      # Step 0 : check assigned host for free port
+      slurmscript += f"PORT=$( srun --chdir='{workdir}' --jobid=$JOBID --job-name='jupyterhub_port' -- /usr/bin/apptainer exec {self.apptainer_path} /opt/conda/bin/python3 -c  'from jupyterhub.utils import random_port; print(random_port())'); "
+      slurmscript += "if [ \"$PORT\" = 0 ] || [ \"$PORT\" == '' ]; then scancel $JOBID; exit 2; fi; " # Tear down allocation and halt spawning if port allocation failed
 
       # Step 1
-
       # Load JupyterHub envirnonment variables as inputs to srun
       env = super(VirgoSpawner, self).get_env()
       slurmscript += "RET=$("
@@ -213,13 +215,13 @@ class VirgoSpawner(Spawner):
       slurmscript += f" JUPYTERHUB_SERVICE_URL=http://0.0.0.0:$PORT/user/{ssh_username}/ "
       
       # Additional variables for Jupyter runtime to avoid trying to use home dir
-      slurmscript += f" JUPYTER_DATA_DIR={workdir}/.jupy/data "
-      slurmscript += f" JUPYTER_CONFIG_PATH={workdir}/.jupy/conf "
+      slurmscript += f" JUPYTER_DATA_DIR='{workdir}'/.jupy/data "
+      slurmscript += f" JUPYTER_CONFIG_PATH='{workdir}'/.jupy/conf "
       
-      slurmscript += f"srun --output={workdir}/jupy_out.out --chdir={workdir}  --jobid=$JOBID --job-name='jupyterhub_singleuser' -- "
-      slurmscript += f" /usr/bin/apptainer exec -B /tmp -B /lustre {self.apptainer_path} /opt/conda/bin/jupyterhub-singleuser >> {workdir}/jupyterlog.log 2>&1 &); "
- 
-      slurmscript += "if [ $? != 0 ]; then scancel $JOBID; exit 3; fi; " # Tear down allocation if creation of single-user notebook failed
+      slurmscript += f"srun --output='{workdir}/jupy_out.out' --chdir='{workdir}'  --jobid=$JOBID --job-name='jupyterhub_singleuser' -- "
+      slurmscript += f" /usr/bin/apptainer exec -B /tmp -B /lustre {self.apptainer_path} /opt/conda/bin/jupyterhub-singleuser >> '{workdir}/jupyterlog.log' 2>&1 & ); "
+      slurmscript += "STATUS=$(squeue --step \"${JOBID}.1\" | grep ${JOBID}); "      # Check that the job step containing the server didn't immediately fail
+      slurmscript += "if [ \"$STATUS\" == \"\" ]; then scancel $JOBID; exit 3; fi; " # Tear down allocation if creation of single-user notebook failed
       slurmscript += "echo $JOBID $HOSTNAME $PORT;"
       self.log.debug(slurmscript)
 
@@ -233,8 +235,16 @@ class VirgoSpawner(Spawner):
          self.log.debug("stdout was {}".format(stdout))
          self.log.debug("stderr was {}".format(stderr))
          if status != 0:
-            raise web.HTTPError(500,
-               "Unable to start server over SLURM.")
+            if status == 1:
+               reason = "Job allocation failed with the following error: "
+               reason += re.search(r'.*salloc: error:.*',stderr).string
+            elif status == 2:           
+               reason = "Port allocation on worker node failed."
+            elif status == 3:
+               reason = "Failed to start single-user server process."
+            else:
+               reason = "Undefined reason."
+            raise web.HTTPError(500, f"Unable to start server over SLURM. {reason}")
 
          job_id, hostname, port = stdout.split()
          self.slurm_job_id = int(job_id)
