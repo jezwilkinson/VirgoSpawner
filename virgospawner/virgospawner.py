@@ -179,11 +179,12 @@ class VirgoSpawner(Spawner):
       = Step 1 of job: srun --jobid {JOBID} /path/to/jupyterhub-singleuser : Actually run the server (having passed the hostname and port to the jupyterhub URL variable)
       """
 
-      slurmscript = ""
+      slurmscript = "unset SSH_ORIGINAL_COMMAND; "
+      slurmscript += f"export WORKDIR='{workdir}' JUPYTERHUB_CONTAINER={self.apptainer_path} NUM_CPUS={num_cpus}; " # export PARTITION={partition}; export RESERVATION={reservation};
       if self.slurm_chgroup: # DEBUG: Switch GID for allocation if required
-         slurmscript += f"unset SSH_ORIGINAL_COMMAND; sg {self.slurm_chgroup} -c \""
+         slurmscript += f"sg {self.slurm_chgroup} -c \""
 
-      slurmscript +=  f"salloc --no-shell --job-name=jupyterhub_reservation --chdir='{workdir}' --cpus-per-task={num_cpus}"
+      slurmscript +=  "salloc --no-shell --job-name=jupyterhub_reservation --chdir=${WORKDIR} --cpus-per-task=${NUM_CPUS}"
       if self.user_options['partition']: 
         slurmscript += f" --partition={partition}"
       if self.user_options['reservation']:
@@ -194,12 +195,12 @@ class VirgoSpawner(Spawner):
          slurmscript += "\""
       slurmscript += "; "
       slurmscript += "if [ $? != 0 ]; then exit 1; fi ; " ##  check return code from salloc ; if error in allocation, quit here
-      slurmscript += f"QUEUE=$(squeue -u {ssh_username} -o '%i %N' -S +i | tail -n 1); " ## retrieve last job ID for user
+      slurmscript += "QUEUE=$(squeue -u ${USER} -o '%i %N' -S +i | tail -n 1); " ## retrieve last job ID for user
       slurmscript += "JOBID=$(cut -d' ' -f1 <<< $QUEUE); "
       slurmscript += "HOSTNAME=$(cut -d' ' -f2 <<< $QUEUE); "
 
       # Step 0 : check assigned host for free port
-      slurmscript += f"PORT=$( srun --chdir='{workdir}' --jobid=$JOBID --job-name='jupyterhub_port' -- /usr/bin/apptainer exec {self.apptainer_path} /opt/conda/bin/python3 -c  'from jupyterhub.utils import random_port; print(random_port())'); "
+      slurmscript += "PORT=$( srun --chdir=${WORKDIR} --jobid=$JOBID --job-name='jupyterhub_port' -- /usr/bin/apptainer exec ${JUPYTERHUB_CONTAINER} /opt/conda/bin/python3 -c  'from jupyterhub.utils import random_port; print(random_port())'); "
       slurmscript += "if [ \"$PORT\" = 0 ] || [ \"$PORT\" == '' ]; then scancel $JOBID; exit 2; fi; " # Tear down allocation and halt spawning if port allocation failed
 
       # Step 1
@@ -212,14 +213,15 @@ class VirgoSpawner(Spawner):
             slurmscript += " %s='%s' " % item  
          elif (item[0] != "JUPYTERHUB_SERVICE_URL"): # Listening port for single-user server set dynamically here
             slurmscript += " %s=%s " % item
-      slurmscript += f" JUPYTERHUB_SERVICE_URL=http://0.0.0.0:$PORT/user/{ssh_username}/ "
+      slurmscript += " JUPYTERHUB_SERVICE_URL=http://0.0.0.0:$PORT/user/${USER}/ "
       
       # Additional variables for Jupyter runtime to avoid trying to use home dir
-      slurmscript += f" JUPYTER_DATA_DIR='{workdir}'/.jupy/data "
-      slurmscript += f" JUPYTER_CONFIG_PATH='{workdir}'/.jupy/conf "
+      slurmscript += " JUPYTER_DATA_DIR=${WORKDIR}/.jupy/data "
+      slurmscript += " JUPYTER_CONFIG_PATH=${WORKDIR}/.jupy/conf "
       
-      slurmscript += f"srun --output='{workdir}/jupy_out.out' --chdir='{workdir}'  --jobid=$JOBID --job-name='jupyterhub_singleuser' -- "
-      slurmscript += f" /usr/bin/apptainer exec -B /tmp -B /lustre {self.apptainer_path} /opt/conda/bin/jupyterhub-singleuser >> '{workdir}/jupyterlog.log' 2>&1 & ); "
+      slurmscript += "srun --output='${WORKDIR}/jupy_out.out' --chdir=${WORKDIR}  --jobid=$JOBID --job-name='jupyterhub_singleuser' -- "
+      slurmscript += " /usr/bin/apptainer exec -B /tmp -B /lustre ${JUPYTERHUB_CONTAINER} /opt/conda/bin/jupyterhub-singleuser --no-browser >> ${WORKDIR}/jupyterlog.log 2>&1 & ); "
+      slurmscript += "sleep 5; "
       slurmscript += "STATUS=$(squeue --step \"${JOBID}.1\" | grep ${JOBID}); "      # Check that the job step containing the server didn't immediately fail
       slurmscript += "if [ \"$STATUS\" == \"\" ]; then scancel $JOBID; exit 3; fi; " # Tear down allocation if creation of single-user notebook failed
       slurmscript += "echo $JOBID $HOSTNAME $PORT;"
