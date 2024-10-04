@@ -98,7 +98,7 @@ class VirgoSpawner(Spawner):
       <br />
       <div class="form-group">
          <label for="num_cpus">Number of CPUs to assign to job / Anzahl Prozessoren (1-{maxcpu})</label>
-         <input name="num_cpus" class="form-control" type="number" value="1" min="1" max="{maxcpu}" onkeyup="if(value>{maxcpu}) value = {maxcpu}; if(value<0 || value == '0') value=1"/>
+         <input name="num_cpus" class="form-control" type="number" value="1" min="1" max="{maxcpu}" onkeyup="if(value>{maxcpu}) value = {maxcpu}; if(value<0 || value == '0') value=1" required/>
       </div>
       <br />
       <div class="form-group">
@@ -113,11 +113,11 @@ class VirgoSpawner(Spawner):
       Parse options from user web form.
       """
       options = {}
-      options['reservation'] = formdata['reservation'][0]
-      options['partition'] = formdata['partition'][0]
-      options['workdir'] = formdata['workdir'][0]
+      options['reservation'] = formdata['reservation'][0].strip()
+      options['partition'] = formdata['partition'][0].strip()
+      options['workdir'] = formdata['workdir'][0].strip()
       options['req_GPU'] = bool(int(formdata['req_GPU'][0]))
-      options['num_cpus'] = int(formdata['num_cpus'][0])
+      options['num_cpus'] = int(formdata['num_cpus'][0].strip() or self.slurm_default_num_cpus)
       options['ssh_keyphrase'] = formdata['ssh_keyphrase'][0]
 
       return options
@@ -134,7 +134,7 @@ class VirgoSpawner(Spawner):
          self.user_options['partition'] = self.slurm_default_partition
       if 'workdir' not in self.user_options or self.user_options['workdir'] == "":
          self.user_options['workdir'] = self.slurm_default_working_directory
-      if 'num_cpus' not in self.user_options:
+      if 'num_cpus' not in self.user_options or self.user_options['num_cpus'] == None:
          self.user_options['num_cpus'] = self.slurm_default_num_cpus
 
       # Validation of user inputs (raise exception in case any invalid values have been entered)
@@ -149,9 +149,9 @@ class VirgoSpawner(Spawner):
       for item in self.user_options:
          if 'workdir' in item:
             if not re.match(pathspec_whitelist, str(self.user_options[item])):
-               raise web.HTTPError(500, f"Invalid path given in option {item}")
+               raise web.HTTPError(400, f"Invalid path given in option {item}")
          elif not re.match(options_whitelist, str(self.user_options[item])) and 'keyphrase' not in item:
-            raise web.HTTPError(500, f"Value given for option {item} is invalid")
+            raise web.HTTPError(400, f"Value given for option {item} is invalid")
 
 
       workdir = self.user_options['workdir']
@@ -166,7 +166,7 @@ class VirgoSpawner(Spawner):
       try:
          k = asyncssh.read_private_key(ssh_keyfile,self.ssh_keyphrase)
       except:
-         raise web.HTTPError(500,
+         raise web.HTTPError(401,
             f"Unable to decrypt private key."
          )
 
@@ -285,4 +285,3 @@ class VirgoSpawner(Spawner):
       self.log.debug("sending command {} to job {} for user {} returned {} --- {} --- {}".format(command, self.slurm_job_id, self.user.name, stdout, stderr, retcode))         
       
       return (retcode == 0)
-
