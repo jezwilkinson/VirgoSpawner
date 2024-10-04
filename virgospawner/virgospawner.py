@@ -285,3 +285,22 @@ class VirgoSpawner(Spawner):
       self.log.debug("sending command {} to job {} for user {} returned {} --- {} --- {}".format(command, self.slurm_job_id, self.user.name, stdout, stderr, retcode))         
       
       return (retcode == 0)
+
+
+   def get_state(self):
+      """Get current state"""
+      state = super().get_state()
+      if self.slurm_job_id:
+         state['slurm_job_id'] = self.slurm_job_id
+      return state
+
+   def load_state(self, state):
+      """load spawner state from DB"""
+      super().load_state(state)
+      if 'slurm_job_id' in state:
+         self.slurm_job_id = state['slurm_job_id']
+
+   def clear_state(self):
+      """Clear current state after shutdown"""
+      super().clear_state()
+      self.slurm_job_id = 0
