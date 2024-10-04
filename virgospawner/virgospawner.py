@@ -184,7 +184,7 @@ class VirgoSpawner(Spawner):
       if self.slurm_chgroup: # DEBUG: Switch GID for allocation if required
          slurmscript += f"sg {self.slurm_chgroup} -c \""
 
-      slurmscript +=  "salloc --no-shell --job-name=jupyterhub_reservation --chdir=${WORKDIR} --cpus-per-task=${NUM_CPUS}"
+      slurmscript +=  "salloc --no-shell --job-name=jupyterhub_reservation --chdir=\\\"${WORKDIR}\\\" --cpus-per-task=${NUM_CPUS}"
       if self.user_options['partition']: 
         slurmscript += f" --partition={partition}"
       if self.user_options['reservation']:
@@ -200,7 +200,7 @@ class VirgoSpawner(Spawner):
       slurmscript += "HOSTNAME=$(cut -d' ' -f2 <<< $QUEUE); "
 
       # Step 0 : check assigned host for free port
-      slurmscript += "PORT=$( srun --chdir=${WORKDIR} --jobid=$JOBID --job-name='jupyterhub_port' -- /usr/bin/apptainer exec ${JUPYTERHUB_CONTAINER} /opt/conda/bin/python3 -c  'from jupyterhub.utils import random_port; print(random_port())'); "
+      slurmscript += "PORT=$( srun --chdir=\"${WORKDIR}\" --jobid=$JOBID --job-name='jupyterhub_port' -- /usr/bin/apptainer exec ${JUPYTERHUB_CONTAINER} /opt/conda/bin/python3 -c  'from jupyterhub.utils import random_port; print(random_port())'); "
       slurmscript += "if [ \"$PORT\" = 0 ] || [ \"$PORT\" == '' ]; then scancel $JOBID; exit 2; fi; " # Tear down allocation and halt spawning if port allocation failed
 
       # Step 1
@@ -216,11 +216,11 @@ class VirgoSpawner(Spawner):
       slurmscript += " JUPYTERHUB_SERVICE_URL=http://0.0.0.0:$PORT/user/${USER}/ "
       
       # Additional variables for Jupyter runtime to avoid trying to use home dir
-      slurmscript += " JUPYTER_DATA_DIR=${WORKDIR}/.jupy/data "
-      slurmscript += " JUPYTER_CONFIG_PATH=${WORKDIR}/.jupy/conf "
+      slurmscript += " JUPYTER_DATA_DIR=\"${WORKDIR}/.jupy/data\" "
+      slurmscript += " JUPYTER_CONFIG_PATH=\"${WORKDIR}/.jupy/conf\" "
       
-      slurmscript += "srun --output='${WORKDIR}/jupy_out.out' --chdir=${WORKDIR}  --jobid=$JOBID --job-name='jupyterhub_singleuser' -- "
-      slurmscript += " /usr/bin/apptainer exec -B /tmp -B /lustre ${JUPYTERHUB_CONTAINER} /opt/conda/bin/jupyterhub-singleuser --no-browser >> ${WORKDIR}/jupyterlog.log 2>&1 & ); "
+      slurmscript += "srun --output=\"${WORKDIR}/jupy_out.out\" --chdir=\"${WORKDIR}\"  --jobid=$JOBID --job-name='jupyterhub_singleuser' -- "
+      slurmscript += " /usr/bin/apptainer exec -B /tmp -B /lustre ${JUPYTERHUB_CONTAINER} /opt/conda/bin/jupyterhub-singleuser --no-browser >> \"${WORKDIR}/jupyterlog.log\" 2>&1 & ); "
       slurmscript += "sleep 5; "
       slurmscript += "STATUS=$(squeue --step \"${JOBID}.1\" | grep ${JOBID}); "      # Check that the job step containing the server didn't immediately fail
       slurmscript += "if [ \"$STATUS\" == \"\" ]; then scancel $JOBID; exit 3; fi; " # Tear down allocation if creation of single-user notebook failed
