@@ -23,11 +23,11 @@ setup(
       "Programming Language :: Python :: 3",
    ],
    python_requires=">=3.6",
-   install_require={
-      "jupyterhub>=5.1.0",
-      "asyncssh",
-      "traitlets"
-   },
+   install_requires=[
+      'jupyterhub>=5.1.0',
+      'asyncssh',
+      'traitlets',
+   ],
    entry_points={
       'jupyterhub.spawners': [
          'virgoservice = virgospawner:VirgoSpawner',
