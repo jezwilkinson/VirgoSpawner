@@ -24,11 +24,14 @@ setup(
    ],
    python_requires=">=3.6",
    install_require={
-      "jupyterhub>=5.1.0"
+      "jupyterhub>=5.1.0",
+      "asyncssh",
+      "traitlets"
    },
    entry_points={
       'jupyterhub.spawners': [
          'virgoservice = virgospawner:VirgoSpawner',
+         'sshservice = virgospawner:SSHSpawner',
       ]
    },
 )
