@@ -27,6 +27,7 @@ setup(
       'jupyterhub>=5.1.0',
       'asyncssh',
       'traitlets',
+      'bcrypt'
    ],
    entry_points={
       'jupyterhub.spawners': [
