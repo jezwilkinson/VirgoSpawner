@@ -1,2 +1,3 @@
 from .virgospawner import VirgoSpawner
-__all__ = ['VirgoSpawner']
+from .sshoidcclient import SSHOIDCClient
+__all__ = ['VirgoSpawner', 'SSHOIDCClient']

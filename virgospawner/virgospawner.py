@@ -3,9 +3,9 @@ from jupyterhub.spawner import Spawner
 from traitlets import Bool, Integer, List, Unicode, default, observe
 from tornado import web
 import asyncssh
+from .sshoidcclient import SSHOIDCClient
 import re
 from shlex import quote
-
 
 
 class VirgoSpawner(Spawner):
@@ -63,21 +63,24 @@ class VirgoSpawner(Spawner):
       help="Endpoint for SSH connection to submitter node",
       config=True)
 
-   ssh_keyfile=Unicode("",
-      help="Filepath for SSH key (Proof-of-concept only, not for production)",
-      config=True)
-
-   ssh_keyphrase=Unicode("",
-      help="keyphrase for SSH key (Proof-of-concept only, not for production)")
-
    def _options_form_default(self):
       """
       Options form that is presented to the user after login, before spawning the single-user notebook
       """
       
       maxcpu = self.slurm_max_requestable_CPUs
-      default_partition = self.slurm_default_partition
-      default_reservation = self.slurm_default_reservation
+      if 'partition' in self.user_options:
+         default_partition = self.user_options['partition']
+      else:
+         default_partition = self.slurm_default_partition
+      if 'reservation' in self.user_options:
+         default_reservation = self.user_options['reservation']
+      else:
+         default_reservation = self.slurm_default_reservation
+      if 'workdir' in self.user_options:
+         default_workdir = self.user_options['workdir']
+      else:
+         default_workdir = ""
 
       return f"""
 
@@ -93,7 +96,7 @@ class VirgoSpawner(Spawner):
       <br />
       <div class="form-group">
          <label for="workdir">Your working directory on /lustre / Ihre Arbeitsverzeichnis auf Lustre</label>
-         <input name="workdir" class="form-control" placeholder="e.g. /lustre/group/username/..."></input>
+         <input name="workdir" class="form-control" placeholder="e.g. /lustre/group/username/..." value="{default_workdir}"></input>
       </div>
       <br />
       <div class="form-group">
@@ -105,11 +108,6 @@ class VirgoSpawner(Spawner):
       <div class="form-group">
          <label for="num_cpus">Number of CPUs to assign to job / Anzahl Prozessoren (1-{maxcpu})</label>
          <input name="num_cpus" class="form-control" type="number" value="1" min="1" max="{maxcpu}" onkeyup="if(value>{maxcpu}) value = {maxcpu}; if(value<0 || value == '0') value=1" required/>
-      </div>
-      <br />
-      <div class="form-group">
-         <label for="ssh_keyphrase">SSH keyphrase</label>
-         <input name="ssh_keyphrase" class="form-control" type="password" />
       </div>
       """
       
@@ -124,7 +122,6 @@ class VirgoSpawner(Spawner):
       options['workdir'] = formdata['workdir'][0].strip()
       options['req_GPU'] = bool(int(formdata['req_GPU'][0]))
       options['num_cpus'] = int(formdata['num_cpus'][0].strip() or self.slurm_default_num_cpus)
-      options['ssh_keyphrase'] = formdata['ssh_keyphrase'][0]
 
       return options
       
@@ -156,7 +153,7 @@ class VirgoSpawner(Spawner):
          if 'workdir' in item:
             if not re.match(pathspec_whitelist, str(self.user_options[item])):
                raise web.HTTPError(400, f"Invalid path given in option {item}")
-         elif not re.match(options_whitelist, str(self.user_options[item])) and 'keyphrase' not in item:
+         elif not re.match(options_whitelist, str(self.user_options[item])):
             raise web.HTTPError(400, f"Value given for option {item} is invalid")
 
 
@@ -167,14 +164,9 @@ class VirgoSpawner(Spawner):
       num_cpus = self.user_options['num_cpus']
       
       ssh_username = self.user.name
-      ssh_keyfile = self.ssh_keyfile
-      self.ssh_keyphrase = self.user_options['ssh_keyphrase'] # DEBUG: to be replaced with proper auth
-      try:
-         k = asyncssh.read_private_key(ssh_keyfile,self.ssh_keyphrase)
-      except:
-         raise web.HTTPError(401,
-            f"Unable to decrypt private key."
-         )
+      #auth_state = await self.user.get_auth_state()
+      #self.log.debug("printing user.auth_state")
+      #self.log.debug(auth_state)
 
       """
       SLURM steps:
@@ -233,8 +225,10 @@ class VirgoSpawner(Spawner):
       slurmscript += "echo $JOBID $HOSTNAME $PORT;"
       self.log.debug(slurmscript)
 
+      token = self.environment['SSH_ACCESS_TOKEN']
+      self.log.debug("token is {}".format(token))
       # Perform SSH connection and run generated script
-      async with asyncssh.connect(self.ssh_endpoint, username=ssh_username, client_keys=[(k)], known_hosts=None) as conn:
+      async with asyncssh.connect(self.ssh_endpoint, username=ssh_username, known_hosts=None, client_factory = lambda: SSHOIDCClient(token) ) as conn:
          result = await conn.run(slurmscript)
          status = result.exit_status
          stdout = result.stdout
@@ -279,11 +273,8 @@ class VirgoSpawner(Spawner):
       Send a SLURM command to the process (used by poll() and stop())
       """
       ssh_username = self.user.name
-      ssh_keyfile = self.ssh_keyfile
-      ssh_keyphrase = self.user_options['ssh_keyphrase']
-      k = asyncssh.read_private_key(ssh_keyfile,ssh_keyphrase)
-      
-      async with asyncssh.connect(self.ssh_endpoint, username=ssh_username, client_keys=[(k)], known_hosts=None) as conn:
+      token = self.environment['SSH_ACCESS_TOKEN']
+      async with asyncssh.connect(self.ssh_endpoint, username=ssh_username, client_factory = lambda: SSHOIDCClient(token), known_hosts=None) as conn:
          result = await conn.run("%s %d" % (command, self.slurm_job_id))
          stdout = result.stdout
          stderr = result.stderr
