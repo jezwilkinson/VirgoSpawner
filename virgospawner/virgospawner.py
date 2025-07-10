@@ -1,6 +1,6 @@
 
 from jupyterhub.spawner import Spawner
-from traitlets import Bool, Integer, List, Unicode, default, observe
+from traitlets import Bool, Integer, List, Unicode, default
 from tornado import web
 import asyncssh
 from .sshoidcclient import SSHOIDCClient
@@ -164,9 +164,6 @@ class VirgoSpawner(Spawner):
       num_cpus = self.user_options['num_cpus']
       
       ssh_username = self.user.name
-      #auth_state = await self.user.get_auth_state()
-      #self.log.debug("printing user.auth_state")
-      #self.log.debug(auth_state)
 
       """
       SLURM steps:
@@ -226,7 +223,6 @@ class VirgoSpawner(Spawner):
       self.log.debug(slurmscript)
 
       token = self.environment['SSH_ACCESS_TOKEN']
-      self.log.debug("token is {}".format(token))
       # Perform SSH connection and run generated script
       async with asyncssh.connect(self.ssh_endpoint, username=ssh_username, known_hosts=None, client_factory = lambda: SSHOIDCClient(token) ) as conn:
          result = await conn.run(slurmscript)
