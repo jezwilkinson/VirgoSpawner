@@ -63,6 +63,8 @@ class VirgoSpawner(Spawner):
       help="Endpoint for SSH connection to submitter node",
       config=True)
 
+
+
    def _options_form_default(self):
       """
       Options form that is presented to the user after login, before spawning the single-user notebook
@@ -122,47 +124,74 @@ class VirgoSpawner(Spawner):
       options['workdir'] = formdata['workdir'][0].strip()
       options['req_GPU'] = bool(int(formdata['req_GPU'][0]))
       options['num_cpus'] = int(formdata['num_cpus'][0].strip() or self.slurm_default_num_cpus)
+      self.validate_useroptions(options)
 
       return options
-      
+
+   def defaults(self, key):
+      default_val = {
+         "reservation": self.slurm_default_reservation,
+         "partition": self.slurm_default_partition,
+         "workdir": self.slurm_default_working_directory,
+         "num_cpus": self.slurm_default_num_cpus
+      }
+      return default_val[key]
+
+   def validate_useroptions(self, opts):
+      """
+      Function to validate values passed to user options.
+      If everything is fine, return None.
+      If any issues are identified, reset the value to its default and raise an error.
+      """
+      pathspec_whitelist=r'^[a-zA-Z0-9/._ -]*$'
+      options_whitelist=r'^[a-zA-Z0-9_-]*$'
+
+      if opts['num_cpus'] > self.slurm_max_requestable_CPUs or opts['num_cpus'] < 1:
+         raise ValueError(
+            f"Invalid number of CPUs given / Ungültige Anzahl von CPUs gegeben (1-32)"
+         )
+      failed_items = list()
+      # Test user strings against whitelisted characters and throw error if invalid
+      for item in opts:
+         if 'num_cpus' in item:
+            if opts[item] > self.slurm_max_requestable_CPUs or opts[item] < 1:
+               failed_items.append(item)
+         elif 'workdir' in item:
+            if not re.match(pathspec_whitelist, str(opts[item])):
+               failed_items.append(item)
+         elif not re.match(options_whitelist, str(opts[item])):
+            failed_items.append(item)
+      if failed_items:
+         for item in failed_items:
+            self.user_options[item] = self.defaults(item)
+         raise web.HTTPError(400,f"User options for {', '.join(str(i) for i in failed_items)} were invalid. Values have been reset to their defaults. Please try spawning again.")
+         return failed_items
+      else:
+         return None
+
    async def start(self):
       """
       Connect to job submission node and start notebook server job
       """
-      
+
+      # Validation of user inputs (raise exception in case any invalid values have been entered)
+      if self.validate_useroptions(self.user_options) is not None:
+         raise web.HTTPError(400, f"User options could not be validated. Please try again.")
       # If any user options were unset, set them to their default (per admin config)
       if 'reservation' not in self.user_options or self.user_options['reservation'] == "":
          self.user_options['reservation'] = self.slurm_default_reservation
       if 'partition' not in self.user_options or self.user_options['partition'] == "":
-         self.user_options['partition'] = self.slurm_default_partition
+         self.user_options['partition'] = self.defaults(partition)
       if 'workdir' not in self.user_options or self.user_options['workdir'] == "":
-         self.user_options['workdir'] = self.slurm_default_working_directory
+         self.user_options['workdir'] = self.defaults('workdir')
       if 'num_cpus' not in self.user_options or self.user_options['num_cpus'] == None:
-         self.user_options['num_cpus'] = self.slurm_default_num_cpus
-
-      # Validation of user inputs (raise exception in case any invalid values have been entered)
-      if self.user_options['num_cpus'] > self.slurm_max_requestable_CPUs or self.user_options['num_cpus'] < 1:
-         raise ValueError(
-            f"Invalid number of CPUs given / Ungültige Anzahl von CPUs gegeben (1-32)"
-         )
-
-      pathspec_whitelist=r'^[a-zA-Z0-9/.\-_ ]*$'
-      options_whitelist=r'^[a-zA-Z0-9_\-]*$'
-      # Test user strings against whitelisted characters and throw error if invalid
-      for item in self.user_options:
-         if 'workdir' in item:
-            if not re.match(pathspec_whitelist, str(self.user_options[item])):
-               raise web.HTTPError(400, f"Invalid path given in option {item}")
-         elif not re.match(options_whitelist, str(self.user_options[item])):
-            raise web.HTTPError(400, f"Value given for option {item} is invalid")
-
+         self.user_options['num_cpus'] = self.defaults('num_cpus')
 
       workdir = self.user_options['workdir']
       partition = self.user_options['partition']
       reservation = self.user_options['reservation']
-      
       num_cpus = self.user_options['num_cpus']
-      
+
       ssh_username = self.user.name
 
       """
@@ -199,7 +228,7 @@ class VirgoSpawner(Spawner):
       slurmscript += "if [ \"$PORT\" = 0 ] || [ \"$PORT\" == '' ]; then scancel $JOBID; exit 2; fi; " # Tear down allocation and halt spawning if port allocation failed
 
       # Step 1
-      # Load JupyterHub envirnonment variables as inputs to srun
+      # Load JupyterHub environment variables as inputs to srun
       env = super(VirgoSpawner, self).get_env()
       slurmscript += "RET=$("
       
