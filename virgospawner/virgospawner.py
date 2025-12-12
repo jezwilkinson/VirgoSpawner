@@ -181,7 +181,7 @@ class VirgoSpawner(Spawner):
       if 'reservation' not in self.user_options or self.user_options['reservation'] == "":
          self.user_options['reservation'] = self.slurm_default_reservation
       if 'partition' not in self.user_options or self.user_options['partition'] == "":
-         self.user_options['partition'] = self.defaults(partition)
+         self.user_options['partition'] = self.defaults('partition')
       if 'workdir' not in self.user_options or self.user_options['workdir'] == "":
          self.user_options['workdir'] = self.defaults('workdir')
       if 'num_cpus' not in self.user_options or self.user_options['num_cpus'] == None:
@@ -235,7 +235,7 @@ class VirgoSpawner(Spawner):
       for item in env.items():
          if ("SCOPE" in item[0]):  # JUPYTERHUB_*_SCOPE variables are JSON arrays and need to be specially quoted
             slurmscript += " %s='%s' " % item  
-         elif (item[0] != "JUPYTERHUB_SERVICE_URL"): # Listening port for single-user server set dynamically here
+         elif ("JUPYTERHUB_SERVICE_URL" not in item[0] and "SSH_ACCESS_TOKEN" not in item[0]): # Listening port for single-user server set dynamically here
             slurmscript += " %s=%s " % item
       slurmscript += " JUPYTERHUB_SERVICE_URL=http://0.0.0.0:$PORT/user/${USER}/ "
       
