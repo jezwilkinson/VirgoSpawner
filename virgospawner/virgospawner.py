@@ -57,6 +57,10 @@ class VirgoSpawner(Spawner):
    slurm_default_working_directory = Unicode("",
       help="Cluster storage directory to run session in",
       config=True)
+
+   slurm_node_suffix = Unicode("",
+      help="Domain suffix for hosts on target cluster",
+      config=True)   
 ##
 
    ssh_endpoint=Unicode("virgo.hpc.gsi.de",
@@ -275,7 +279,7 @@ class VirgoSpawner(Spawner):
 
          job_id, hostname, port = stdout.split()
          self.slurm_job_id = int(job_id)
-         self.slurm_job_hostname = hostname + ".gsi.de"
+         self.slurm_job_hostname = hostname + self.slurm_node_suffix
          self.slurm_job_hostport = int(port)
 
          self.log.debug("Server for user {} was spawned with job ID {} on hostname {}, listening on port {}".format(self.user.name, self.slurm_job_id, self.slurm_job_hostname, self.slurm_job_hostport))
