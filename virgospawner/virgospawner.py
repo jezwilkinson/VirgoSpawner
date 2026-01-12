@@ -247,8 +247,8 @@ class VirgoSpawner(Spawner):
       slurmscript += " JUPYTER_DATA_DIR=\"${WORKDIR}/.jupy/data\" "
       slurmscript += " JUPYTER_CONFIG_PATH=\"${WORKDIR}/.jupy/conf\" "
       
-      slurmscript += "srun --output=\"${WORKDIR}/jupy_out.out\" --chdir=\"${WORKDIR}\"  --jobid=$JOBID --job-name='jupyterhub_singleuser' -- "
-      slurmscript += " /usr/bin/apptainer exec -B /tmp -B /lustre ${JUPYTERHUB_CONTAINER} ${JUPYTERHUB_SINGLEUSER_PATH}/jupyterhub-singleuser --no-browser >> \"${WORKDIR}/jupyterlog.log\" 2>&1 & ); "
+      slurmscript += "srun --output=\"${WORKDIR}/.jupy/jupy_out.out\" --chdir=\"${WORKDIR}\"  --jobid=$JOBID --job-name='jupyterhub_singleuser' -- "
+      slurmscript += " /usr/bin/apptainer exec -B /tmp -B /lustre ${JUPYTERHUB_CONTAINER} ${JUPYTERHUB_SINGLEUSER_PATH}/jupyterhub-singleuser --no-browser >> \"${WORKDIR}/.jupy/jupyterlog.log\" 2>&1 & ); "
       slurmscript += "sleep 5; "
       slurmscript += "STATUS=$(squeue --step \"${JOBID}.1\" | grep ${JOBID}); "      # Check that the job step containing the server didn't immediately fail
       slurmscript += "if [ \"$STATUS\" == \"\" ]; then scancel $JOBID; exit 3; fi; " # Tear down allocation if creation of single-user notebook failed
@@ -302,7 +302,8 @@ class VirgoSpawner(Spawner):
       Send a SLURM command to the process (used by poll() and stop())
       """
       ssh_username = self.user.name
-      token = self.environment['SSH_ACCESS_TOKEN']
+      auth_state = await self.user.get_auth_state()
+      token = auth_state['exchanged_tokens']['ssh']
       async with asyncssh.connect(self.ssh_endpoint, username=ssh_username, client_factory = lambda: SSHOIDCClient(token), known_hosts=None) as conn:
          result = await conn.run("%s %d" % (command, self.slurm_job_id))
          stdout = result.stdout
