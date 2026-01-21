@@ -5,8 +5,7 @@ from tornado import web
 import asyncssh
 from .sshoidcclient import SSHOIDCClient
 import re
-from shlex import quote
-
+import os.path
 
 class VirgoSpawner(Spawner):
 
@@ -188,8 +187,8 @@ class VirgoSpawner(Spawner):
       # Job Step 0: check for free port on allocated host
       slurmscript += "PORT=$( srun --jobid=$JOBID --job-name='jupyterhub_port' -- /usr/bin/apptainer exec ${JUPYTERHUB_CONTAINER} ${JUPYTERHUB_SINGLEUSER_PATH}/python3 -c  'from jupyterhub.utils import random_port; print(random_port())'); "
       slurmscript += "if [ \"$PORT\" = 0 ] || [ \"$PORT\" == '' ]; then scancel $JOBID; exit 2; fi; " # Tear down allocation and halt spawning if port allocation failed
-
-      # Step 1
+      slurmscript += "unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY; "
+      # Job Step 1
       # Load JupyterHub environment variables as inputs to srun
       env = super(VirgoSpawner, self).get_env()
       slurmscript += "RET=$("
@@ -199,14 +198,14 @@ class VirgoSpawner(Spawner):
             slurmscript += " %s='%s' " % item  
          elif ("JUPYTERHUB_SERVICE_URL" not in item[0] and "SSH_ACCESS_TOKEN" not in item[0]): # Listening port for single-user server set dynamically here
             slurmscript += " %s=%s " % item
-      slurmscript += " JUPYTERHUB_SERVICE_URL=http://0.0.0.0:$PORT/user/${USER}/ "
+      slurmscript += " JUPYTERHUB_SERVICE_URL=https://0.0.0.0:$PORT/user/${USER}/ "
       
       # Additional variables for Jupyter runtime to avoid trying to use home dir
       slurmscript += "JUPYTER_DATA_DIR=\"${WORKDIR}/.jupy/data\" "
       slurmscript += "JUPYTER_CONFIG_PATH=\"${WORKDIR}/.jupy/conf\" "
       
       slurmscript += "srun --output=\"${WORKDIR}/.jupy/jupy_out.out\" --chdir=\"${WORKDIR}\"  --jobid=$JOBID --job-name='jupyterhub_singleuser' -- "
-      slurmscript += " /usr/bin/apptainer exec -B /tmp -B /lustre ${JUPYTERHUB_CONTAINER} ${JUPYTERHUB_SINGLEUSER_PATH}/jupyterhub-singleuser --no-browser >> \"${WORKDIR}/.jupy/jupyterlog.log\" 2>&1 & ); "
+      slurmscript += "/usr/bin/apptainer exec -B /tmp -B /lustre ${JUPYTERHUB_CONTAINER} ${JUPYTERHUB_SINGLEUSER_PATH}/jupyterhub-singleuser --no-browser >> \"${WORKDIR}/.jupy/jupyterlog.log\" 2>&1 & ); "
       slurmscript += "sleep 5; "
       slurmscript += "STATUS=$(squeue --step \"${JOBID}.1\" | grep ${JOBID}); "      # Check that the job step containing the server didn't immediately fail
       slurmscript += "if [ \"$STATUS\" == \"\" ]; then scancel $JOBID; exit 3; fi; " # Tear down allocation if creation of single-user notebook failed
@@ -233,6 +232,8 @@ class VirgoSpawner(Spawner):
                reason = "Failed to start single-user server process."
             else:
                reason = "Undefined reason."
+            self.log.error("Server for user {} failed to start: {}".format(self.user.name, reason))
+            conn.close()
             raise web.HTTPError(500, f"Unable to start server over SLURM. {reason}")
 
          job_id, hostname, port = stdout.split()
@@ -241,7 +242,7 @@ class VirgoSpawner(Spawner):
          self.slurm_job_hostport = int(port)
 
          self.log.debug("Server for user {} was spawned with job ID {} on hostname {}, listening on port {}".format(self.user.name, self.slurm_job_id, self.slurm_job_hostname, self.slurm_job_hostport))
-
+         conn.close()
       return (self.slurm_job_hostname, self.slurm_job_hostport)
 
    async def poll(self): # TODO (return "None" if running; cleanup and other exit code if not)
@@ -338,4 +339,47 @@ class VirgoSpawner(Spawner):
          return failed_items
       else:
          return None
+
+   async def move_certs(self, paths):
+      """
+      Copies the internally-signed key/cert pair for SSL termination from the 
+      webserver to the remote server via SCP.
+      The certificates are generated locally on the JupyterHub node in a location defined
+      by the config `internal_certs_location`.
+      `.move_certs` is called after certs for the singleuser notebook have been created by create_certs,
+      and before the server is spawned with start().
+      The 
+      
+      Arguments:
+         paths (dict): a dict of paths for key, cert, and CA.
+             These paths will be resolvable and readable by the Hub process,
+             but not by the notebook server.
+      Returns:
+         remote_cert_paths (dict): a dict of paths for key, cert, and CA
+             on the remote storage.
+             These paths should be resolvable and readable by the notebook
+             server to be launched.
+            
+      """
+
+      workdir = self.user_options['workdir']      
+      ssh_username = self.user.name
+      token = self.environment['SSH_ACCESS_TOKEN']
+      remote_cert_dir = workdir + '/.jupy/.certs/'
+      async with asyncssh.connect(self.ssh_endpoint, username=ssh_username, known_hosts=None, client_factory = lambda: SSHOIDCClient(token) ) as conn:
+         # Create target directory for SSL certs
+         result = await conn.run('mkdir -p {}'.format(remote_cert_dir))
+         status = result.exit_status
+         if status != 0:
+            self.log.error(f"Singleuser server for user {ssh_username} failed to start: Could not create directory {workdir} for internal SSL certificates")
+            raise web.HTTPError(400, f"Failed to initialise working directory. Please check that you have permissions to write to {workdir}, or specify a different path.")
+         # Copy locally generated cert/key to server ("preserve" to keep proper permission modes)
+         try: await asyncssh.scp(paths.values(), (conn, remote_cert_dir), preserve = True)
+         except asyncssh.SFTPError as exc:
+            self.log.error(f"Singleuser server for user {ssh_username} failed to start: Failed to copy internal SSL certificates to {workdir}")
+            raise web.HTTPError(400, f"Failed to initialise working directory. Please check that you have permissions to write to {workdir}, or specify a different path.")
+
+         conn.close()
+      remote_cert_paths = {key: remote_cert_dir + os.path.basename(localpath) for (key,localpath) in paths.items()}
+      return remote_cert_paths
 
