@@ -141,60 +141,18 @@ class VirgoSpawner(Spawner):
       }
       return default_val[key]
 
-   def validate_useroptions(self, opts):
-      """
-      Function to validate values passed to user options.
-      If everything is fine, return None.
-      If any issues are identified, reset the value to its default and raise an error.
-      """
-      pathspec_whitelist=r'^[a-zA-Z0-9/._ -]*$'
-      options_whitelist=r'^[a-zA-Z0-9_-]*$'
-
-      if opts['num_cpus'] > self.slurm_max_requestable_CPUs or opts['num_cpus'] < 1:
-         raise ValueError(
-            f"Invalid number of CPUs given / Ungültige Anzahl von CPUs gegeben (1-32)"
-         )
-      failed_items = list()
-      # Test user strings against whitelisted characters and throw error if invalid
-      for item in opts:
-         if 'num_cpus' in item:
-            if opts[item] > self.slurm_max_requestable_CPUs or opts[item] < 1:
-               failed_items.append(item)
-         elif 'workdir' in item:
-            if not re.match(pathspec_whitelist, str(opts[item])):
-               failed_items.append(item)
-         elif not re.match(options_whitelist, str(opts[item])):
-            failed_items.append(item)
-      if failed_items:
-         for item in failed_items:
-            self.user_options[item] = self.defaults(item)
-         raise web.HTTPError(400,f"User options for {', '.join(str(i) for i in failed_items)} were invalid. Values have been reset to their defaults. Please try spawning again.")
-         return failed_items
-      else:
-         return None
-
    async def start(self):
       """
-      Connect to job submission node and start notebook server job
+      Connect to job submission node and start notebook server job.
+      Returns hostname and listening port of the cluster node running the single-user server.
       """
 
-      # Validation of user inputs (raise exception in case any invalid values have been entered)
-      if self.validate_useroptions(self.user_options) is not None:
-         raise web.HTTPError(400, f"User options could not be validated. Please try again.")
-      # If any user options were unset, set them to their default (per admin config)
-      if 'reservation' not in self.user_options or self.user_options['reservation'] == "":
-         self.user_options['reservation'] = self.slurm_default_reservation
-      if 'partition' not in self.user_options or self.user_options['partition'] == "":
-         self.user_options['partition'] = self.defaults('partition')
-      if 'workdir' not in self.user_options or self.user_options['workdir'] == "":
-         self.user_options['workdir'] = self.defaults('workdir')
-      if 'num_cpus' not in self.user_options or self.user_options['num_cpus'] == None:
-         self.user_options['num_cpus'] = self.defaults('num_cpus')
-
+      # Parse relevant job options from defined user_options
       workdir = self.user_options['workdir']
       partition = self.user_options['partition']
       reservation = self.user_options['reservation']
       num_cpus = self.user_options['num_cpus']
+      req_GPU = self.user_options['req_GPU']
 
       ssh_username = self.user.name
 
@@ -212,12 +170,12 @@ class VirgoSpawner(Spawner):
       if self.slurm_chgroup: # DEBUG: Switch GID for allocation if required
          slurmscript += f"sg {self.slurm_chgroup} -c \""
 
-      slurmscript +=  "salloc --no-shell --job-name=jupyterhub_reservation --chdir=\\\"${WORKDIR}\\\" --cpus-per-task=${NUM_CPUS}"
-      if self.user_options['partition']: 
+      slurmscript +=  "salloc --no-shell --job-name=jupyterhub_reservation --cpus-per-task=${NUM_CPUS}"
+      if partition:
         slurmscript += f" --partition={partition}"
-      if self.user_options['reservation']:
+      if reservation:
          slurmscript += f" --reservation={reservation}"
-      if self.user_options['req_GPU']:
+      if req_GPU:
          slurmscript += " --constraint=mi100 --gres=gpu:1"
       if self.slurm_chgroup: # terminate chgroup command if invoked
          slurmscript += "\""
@@ -227,8 +185,8 @@ class VirgoSpawner(Spawner):
       slurmscript += "JOBID=$(cut -d' ' -f1 <<< $QUEUE); "
       slurmscript += "HOSTNAME=$(cut -d' ' -f2 <<< $QUEUE); "
 
-      # Step 0 : check assigned host for free port
-      slurmscript += "PORT=$( srun --chdir=\"${WORKDIR}\" --jobid=$JOBID --job-name='jupyterhub_port' -- /usr/bin/apptainer exec ${JUPYTERHUB_CONTAINER} ${JUPYTERHUB_SINGLEUSER_PATH}/python3 -c  'from jupyterhub.utils import random_port; print(random_port())'); "
+      # Job Step 0: check for free port on allocated host
+      slurmscript += "PORT=$( srun --jobid=$JOBID --job-name='jupyterhub_port' -- /usr/bin/apptainer exec ${JUPYTERHUB_CONTAINER} ${JUPYTERHUB_SINGLEUSER_PATH}/python3 -c  'from jupyterhub.utils import random_port; print(random_port())'); "
       slurmscript += "if [ \"$PORT\" = 0 ] || [ \"$PORT\" == '' ]; then scancel $JOBID; exit 2; fi; " # Tear down allocation and halt spawning if port allocation failed
 
       # Step 1
@@ -244,8 +202,8 @@ class VirgoSpawner(Spawner):
       slurmscript += " JUPYTERHUB_SERVICE_URL=http://0.0.0.0:$PORT/user/${USER}/ "
       
       # Additional variables for Jupyter runtime to avoid trying to use home dir
-      slurmscript += " JUPYTER_DATA_DIR=\"${WORKDIR}/.jupy/data\" "
-      slurmscript += " JUPYTER_CONFIG_PATH=\"${WORKDIR}/.jupy/conf\" "
+      slurmscript += "JUPYTER_DATA_DIR=\"${WORKDIR}/.jupy/data\" "
+      slurmscript += "JUPYTER_CONFIG_PATH=\"${WORKDIR}/.jupy/conf\" "
       
       slurmscript += "srun --output=\"${WORKDIR}/.jupy/jupy_out.out\" --chdir=\"${WORKDIR}\"  --jobid=$JOBID --job-name='jupyterhub_singleuser' -- "
       slurmscript += " /usr/bin/apptainer exec -B /tmp -B /lustre ${JUPYTERHUB_CONTAINER} ${JUPYTERHUB_SINGLEUSER_PATH}/jupyterhub-singleuser --no-browser >> \"${WORKDIR}/.jupy/jupyterlog.log\" 2>&1 & ); "
@@ -331,3 +289,53 @@ class VirgoSpawner(Spawner):
       """Clear current state after shutdown"""
       super().clear_state()
       self.slurm_job_id = 0
+
+   def apply_user_options(self, spawner, user_options):
+      """
+      Hook before spawn to validate user options
+      """
+      # Validation of user inputs (raise exception in case any invalid values have been entered)
+      if self.validate_useroptions(user_options) is not None:
+         raise web.HTTPError(400, f"User options could not be validated. Please try again.")
+      # If any user options were unset, set them to their default (per admin config)
+      if 'reservation' not in user_options or user_options['reservation'] == "":
+         self.user_options['reservation'] = self.slurm_default_reservation
+      if 'partition' not in user_options or user_options['partition'] == "":
+         self.user_options['partition'] = self.defaults('partition')
+      if 'workdir' not in user_options or user_options['workdir'] == "":
+         self.user_options['workdir'] = self.defaults('workdir')
+      if 'num_cpus' not in user_options or user_options['num_cpus'] == None:
+         self.user_options['num_cpus'] = self.defaults('num_cpus')
+
+   def validate_useroptions(self, opts):
+      """
+      Function to validate values passed to user options.
+      If everything is fine, return None.
+      If any issues are identified, reset the value to its default and raise an error.
+      """
+      pathspec_whitelist=r'^[a-zA-Z0-9/._ -]*$'
+      options_whitelist=r'^[a-zA-Z0-9_-]*$'
+
+      if opts['num_cpus'] > self.slurm_max_requestable_CPUs or opts['num_cpus'] < 1:
+         raise ValueError(
+            f"Invalid number of CPUs given / Ungültige Anzahl von CPUs gegeben (1-32)"
+         )
+      failed_items = list()
+      # Test user strings against whitelisted characters and throw error if invalid
+      for item in opts:
+         if 'num_cpus' in item:
+            if opts[item] > self.slurm_max_requestable_CPUs or opts[item] < 1:
+               failed_items.append(item)
+         elif 'workdir' in item:
+            if not re.match(pathspec_whitelist, str(opts[item])):
+               failed_items.append(item)
+         elif not re.match(options_whitelist, str(opts[item])):
+            failed_items.append(item)
+      if failed_items:
+         for item in failed_items:
+            self.user_options[item] = self.defaults(item)
+         raise web.HTTPError(400,f"User options for {', '.join(str(i) for i in failed_items)} were invalid. Values have been reset to their defaults. Please try spawning again.")
+         return failed_items
+      else:
+         return None
+
