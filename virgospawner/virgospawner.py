@@ -344,10 +344,9 @@ class VirgoSpawner(Spawner):
       Copies the internally-signed key/cert pair for SSL termination from the 
       webserver to the remote server via SCP.
       The certificates are generated locally on the JupyterHub node in a location defined
-      by the config `internal_certs_location`.
+      by the config `internal_certs_location` (provided in the `paths` dict).
       `.move_certs` is called after certs for the singleuser notebook have been created by create_certs,
       and before the server is spawned with start().
-      The 
       
       Arguments:
          paths (dict): a dict of paths for key, cert, and CA.
@@ -366,9 +365,9 @@ class VirgoSpawner(Spawner):
       token = self.environment['SSH_ACCESS_TOKEN']
       remote_cert_dir = workdir + '/.jupy/.certs/'
       async with asyncssh.connect(self.ssh_endpoint, username=ssh_username, known_hosts=None, client_factory = lambda: SSHOIDCClient(token) ) as conn:
-         # Create target directory for SSL certs and ensure it is only user-readable
+         # Create target directory for SSL certs and ensure it is only user-accessible
          try: 
-            result = await conn.run(f'mkdir -p {remote_cert_dir}; chmod 0700 {remote_cert_dir};')
+            result = await conn.run(f"mkdir -p \"{remote_cert_dir}\"; chmod 0700 \"{remote_cert_dir}\";")
          except Exception as e:
             self.log.error(f"Singleuser server for user {ssh_username} failed to start: Could not establish SSH connection while creating certificate dir for user. Exception {type(e).__name__,}, arguments: {e.args}")
             raise web.HTTPerror(400, f"Failed to connect to job submitter node as user {ssh_username}.")
