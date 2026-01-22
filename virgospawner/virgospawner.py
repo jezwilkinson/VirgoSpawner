@@ -220,8 +220,8 @@ class VirgoSpawner(Spawner):
          stdout = result.stdout
          stderr = result.stderr
 
-         self.log.debug("stdout was {}".format(stdout))
-         self.log.debug("stderr was {}".format(stderr))
+         self.log.debug(f"stdout was {stdout}")
+         self.log.debug(f"stderr was {stderr}")
          if status != 0:
             if status == 1:
                reason = "Job allocation failed with the following error: "
@@ -232,7 +232,7 @@ class VirgoSpawner(Spawner):
                reason = "Failed to start single-user server process."
             else:
                reason = "Undefined reason."
-            self.log.error("Server for user {} failed to start: {}".format(self.user.name, reason))
+            self.log.error(f"Server for user {self.user.name} failed to start: {reason}")
             conn.close()
             raise web.HTTPError(500, f"Unable to start server over SLURM. {reason}")
 
@@ -240,8 +240,7 @@ class VirgoSpawner(Spawner):
          self.slurm_job_id = int(job_id)
          self.slurm_job_hostname = hostname + self.slurm_node_suffix
          self.slurm_job_hostport = int(port)
-
-         self.log.debug("Server for user {} was spawned with job ID {} on hostname {}, listening on port {}".format(self.user.name, self.slurm_job_id, self.slurm_job_hostname, self.slurm_job_hostport))
+         self.log.debug(f"Server for user {self.user.name} was spawned with job ID {self.slurm_job_id} on hostname {self.slurm_job_hostname}, listening on port {self.slurm_job_hostport}")
          conn.close()
       return (self.slurm_job_hostname, self.slurm_job_hostport)
 
@@ -268,7 +267,7 @@ class VirgoSpawner(Spawner):
          stdout = result.stdout
          stderr = result.stderr
          retcode = result.exit_status
-      self.log.debug("sending command {} to job {} for user {} returned {} --- {} --- {}".format(command, self.slurm_job_id, self.user.name, stdout, stderr, retcode))         
+      self.log.debug(f"sending command {command} to job {self.slurm_job_id} for user {self.user.name} returned {retcode} --- {stdout} --- {stderr}")         
       
       return (retcode == 0)
 
