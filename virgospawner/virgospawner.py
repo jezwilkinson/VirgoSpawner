@@ -57,6 +57,10 @@ class VirgoSpawner(Spawner):
       help="Cluster storage directory to run session in",
       config=True)
 
+   slurm_gpu_reservation_args = Unicode("--gres=gpu:1",
+      help="Argument(s) to add to `salloc` command if user requests GPU. Default is 'any GPU'. Can be reconfigured to add custom constraints like model numbers (e.g. `--constraint=mi100 --gres=gpu:1` if GPU jobs should always use an MI100)",
+      config=True)
+
    slurm_node_suffix = Unicode("",
       help="Domain suffix for hosts on target cluster",
       config=True)   
@@ -67,7 +71,7 @@ class VirgoSpawner(Spawner):
       config=True)
 
    ssh_known_hosts = Unicode("/etc/ssh/ssh_known_hosts",
-      help="Known hosts to be used for SSH host verification. If set to None, host verification is disabled."
+      help="Known hosts to be used for SSH host verification. If set to None, host verification is disabled.",
       config=True)
 
    def _options_form_default(self):
@@ -177,7 +181,7 @@ class VirgoSpawner(Spawner):
       if reservation:
          slurmscript += f" --reservation={reservation}"
       if req_GPU:
-         slurmscript += " --constraint=mi100 --gres=gpu:1"
+         slurmscript += f" {self.slurm_gpu_reservation_args}"
       if self.slurm_chgroup: # terminate chgroup command if invoked
          slurmscript += "\""
       slurmscript += "; "
