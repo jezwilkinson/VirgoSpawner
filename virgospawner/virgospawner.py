@@ -62,11 +62,13 @@ class VirgoSpawner(Spawner):
       config=True)   
 ##
 
-   ssh_endpoint=Unicode("virgo.hpc.gsi.de",
+   ssh_endpoint=Unicode("",
       help="Endpoint for SSH connection to submitter node",
       config=True)
 
-
+   ssh_known_hosts = Unicode("/etc/ssh/ssh_known_hosts",
+      help="Known hosts to be used for SSH host verification. If set to None, host verification is disabled."
+      config=True)
 
    def _options_form_default(self):
       """
@@ -214,7 +216,7 @@ class VirgoSpawner(Spawner):
 
       token = self.environment['SSH_ACCESS_TOKEN']
       # Perform SSH connection and run generated script
-      async with asyncssh.connect(self.ssh_endpoint, username=ssh_username, known_hosts=None, client_factory = lambda: SSHOIDCClient(token) ) as conn:
+      async with asyncssh.connect(self.ssh_endpoint, username=ssh_username, client_factory = lambda: SSHOIDCClient(token), known_hosts=self.ssh_known_hosts) as conn:
          result = await conn.run(slurmscript)
          status = result.exit_status
          stdout = result.stdout
@@ -262,7 +264,7 @@ class VirgoSpawner(Spawner):
       ssh_username = self.user.name
       auth_state = await self.user.get_auth_state()
       token = auth_state['exchanged_tokens']['ssh']
-      async with asyncssh.connect(self.ssh_endpoint, username=ssh_username, client_factory = lambda: SSHOIDCClient(token), known_hosts=None) as conn:
+      async with asyncssh.connect(self.ssh_endpoint, username=ssh_username, client_factory = lambda: SSHOIDCClient(token), known_hosts=self.ssh_known_hosts) as conn:
          result = await conn.run("%s %d" % (command, self.slurm_job_id))
          stdout = result.stdout
          stderr = result.stderr
@@ -363,8 +365,8 @@ class VirgoSpawner(Spawner):
       workdir = self.user_options['workdir']      
       ssh_username = self.user.name
       token = self.environment['SSH_ACCESS_TOKEN']
-      remote_cert_dir = workdir + '/.jupy/.certs/'
-      async with asyncssh.connect(self.ssh_endpoint, username=ssh_username, known_hosts=None, client_factory = lambda: SSHOIDCClient(token) ) as conn:
+      remote_cert_dir = workdir + "/.jupy/.certs/"
+      async with asyncssh.connect(self.ssh_endpoint, username=ssh_username, known_hosts=self.ssh_known_hosts, client_factory = lambda: SSHOIDCClient(token) ) as conn:
          # Create target directory for SSL certs and ensure it is only user-accessible
          try: 
             result = await conn.run(f"mkdir -p \"{remote_cert_dir}\"; chmod 0700 \"{remote_cert_dir}\";")
