@@ -367,8 +367,12 @@ class VirgoSpawner(Spawner):
       token = self.environment['SSH_ACCESS_TOKEN']
       remote_cert_dir = workdir + '/.jupy/.certs/'
       async with asyncssh.connect(self.ssh_endpoint, username=ssh_username, known_hosts=None, client_factory = lambda: SSHOIDCClient(token) ) as conn:
-         # Create target directory for SSL certs
-         result = await conn.run('mkdir -p {}'.format(remote_cert_dir))
+         # Create target directory for SSL certs and ensure it is only user-readable
+         try: 
+            result = await conn.run(f'mkdir -p {remote_cert_dir}; chmod 0700 {remote_cert_dir};')
+         except Exception as e:
+            self.log.error(f"Singleuser server for user {ssh_username} failed to start: Could not establish SSH connection while creating certificate dir for user. Exception {type(e).__name__,}, arguments: {e.args}")
+            raise web.HTTPerror(400, f"Failed to connect to job submitter node as user {ssh_username}.")
          status = result.exit_status
          if status != 0:
             self.log.error(f"Singleuser server for user {ssh_username} failed to start: Could not create directory {workdir} for internal SSL certificates")
