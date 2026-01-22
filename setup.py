@@ -12,7 +12,7 @@ setup(
    author="Jeremy Wilkinson",
    author_email="j.wilkinson@gsi.de",
    license="BSD",
-   version="0.1.2",
+   version="0.1.3",
    platforms="Linux",
    keywords=["Jupyter"],
    classifiers=[
@@ -24,7 +24,7 @@ setup(
    ],
    python_requires=">=3.6",
    install_requires=[
-      'jupyterhub>=5.1.0',
+      'jupyterhub>=5.4.0',
       'asyncssh',
       'traitlets',
       'bcrypt'
