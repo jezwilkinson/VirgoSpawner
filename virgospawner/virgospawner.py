@@ -220,34 +220,39 @@ class VirgoSpawner(Spawner):
 
       token = self.environment['SSH_ACCESS_TOKEN']
       # Perform SSH connection and run generated script
-      async with asyncssh.connect(self.ssh_endpoint, username=ssh_username, client_factory = lambda: SSHOIDCClient(token), known_hosts=self.ssh_known_hosts) as conn:
-         result = await conn.run(slurmscript)
-         status = result.exit_status
-         stdout = result.stdout
-         stderr = result.stderr
+      try:
+         async with asyncssh.connect(self.ssh_endpoint, username=ssh_username, client_factory = lambda: SSHOIDCClient(token), known_hosts=self.ssh_known_hosts) as conn:
+            result = await conn.run(slurmscript)
+            status = result.exit_status
+            stdout = result.stdout
+            stderr = result.stderr
 
-         self.log.debug(f"stdout was {stdout}")
-         self.log.debug(f"stderr was {stderr}")
-         if status != 0:
-            if status == 1:
-               reason = "Job allocation failed with the following error: "
-               reason += re.search(r'.*salloc: error:.*',stderr).string
-            elif status == 2:           
-               reason = "Port allocation on worker node failed."
-            elif status == 3:
-               reason = "Failed to start single-user server process."
-            else:
-               reason = "Undefined reason."
-            self.log.error(f"Server for user {self.user.name} failed to start: {reason}")
+            self.log.debug(f"stdout was {stdout}")
+            self.log.debug(f"stderr was {stderr}")
+            if status != 0:
+               if status == 1:
+                  reason = "Job allocation failed with the following error: "
+                  reason += re.search(r'.*salloc: error:.*',stderr).string
+               elif status == 2:           
+                  reason = "Port allocation on worker node failed."
+               elif status == 3:
+                  reason = "Failed to start single-user server process."
+               else:
+                  reason = "Undefined reason."
+               self.log.error(f"Server for user {self.user.name} failed to start: {reason}")
+               conn.close()
+               raise web.HTTPError(500, f"Unable to start server over SLURM. {reason}")
+
+            job_id, hostname, port = stdout.split()
+            self.slurm_job_id = int(job_id)
+            self.slurm_job_hostname = hostname + self.slurm_node_suffix
+            self.slurm_job_hostport = int(port)
+            self.log.debug(f"Server for user {self.user.name} was spawned with job ID {self.slurm_job_id} on hostname {self.slurm_job_hostname}, listening on port {self.slurm_job_hostport}")
             conn.close()
-            raise web.HTTPError(500, f"Unable to start server over SLURM. {reason}")
-
-         job_id, hostname, port = stdout.split()
-         self.slurm_job_id = int(job_id)
-         self.slurm_job_hostname = hostname + self.slurm_node_suffix
-         self.slurm_job_hostport = int(port)
-         self.log.debug(f"Server for user {self.user.name} was spawned with job ID {self.slurm_job_id} on hostname {self.slurm_job_hostname}, listening on port {self.slurm_job_hostport}")
-         conn.close()
+      # Catch exceptions from establishing SSH connection
+      except asyncssh.Error as e:
+         self.log.error(f"SSH error: Failed to spawn session for user {ssh_username}. Reason: {e.reason}.")
+         raise web.HTTPError(500, f"Connection to Slurm submitter node failed while starting server: {e.reason}")
       return (self.slurm_job_hostname, self.slurm_job_hostport)
 
    async def poll(self): # TODO (return "None" if running; cleanup and other exit code if not)
@@ -268,11 +273,15 @@ class VirgoSpawner(Spawner):
       ssh_username = self.user.name
       auth_state = await self.user.get_auth_state()
       token = auth_state['exchanged_tokens']['ssh']
-      async with asyncssh.connect(self.ssh_endpoint, username=ssh_username, client_factory = lambda: SSHOIDCClient(token), known_hosts=self.ssh_known_hosts) as conn:
-         result = await conn.run("%s %d" % (command, self.slurm_job_id))
-         stdout = result.stdout
-         stderr = result.stderr
-         retcode = result.exit_status
+      try:
+         async with asyncssh.connect(self.ssh_endpoint, username=ssh_username, client_factory = lambda: SSHOIDCClient(token), known_hosts=self.ssh_known_hosts) as conn:
+            result = await conn.run("%s %d" % (command, self.slurm_job_id))
+            stdout = result.stdout
+            stderr = result.stderr
+            retcode = result.exit_status
+      except asyncssh.Error as e:
+         self.log.error(f"SSH error: Failed to connect to Slurm node while sending {command} to job {self.slurm_job_id} for user {self.user.name}: {e.reason}")
+         raise web.HTTPError(500, f"Failed to connect to job submitter node as user {ssh_username}: {e.reason}") 
       self.log.debug(f"sending command {command} to job {self.slurm_job_id} for user {self.user.name} returned {retcode} --- {stdout} --- {stderr}")         
       
       return (retcode == 0)
@@ -370,24 +379,28 @@ class VirgoSpawner(Spawner):
       ssh_username = self.user.name
       token = self.environment['SSH_ACCESS_TOKEN']
       remote_cert_dir = workdir + "/.jupy/.certs/"
-      async with asyncssh.connect(self.ssh_endpoint, username=ssh_username, known_hosts=self.ssh_known_hosts, client_factory = lambda: SSHOIDCClient(token) ) as conn:
-         # Create target directory for SSL certs and ensure it is only user-accessible
-         try: 
-            result = await conn.run(f"mkdir -p \"{remote_cert_dir}\"; chmod 0700 \"{remote_cert_dir}\";")
-         except Exception as e:
-            self.log.error(f"Singleuser server for user {ssh_username} failed to start: Could not establish SSH connection while creating certificate dir for user. Exception {type(e).__name__,}, arguments: {e.args}")
-            raise web.HTTPerror(400, f"Failed to connect to job submitter node as user {ssh_username}.")
-         status = result.exit_status
-         if status != 0:
-            self.log.error(f"Singleuser server for user {ssh_username} failed to start: Could not create directory {workdir} for internal SSL certificates")
-            raise web.HTTPError(400, f"Failed to initialise working directory. Please check that you have permissions to write to {workdir}, or specify a different path.")
-         # Copy locally generated cert/key to server ("preserve" to keep proper permission modes)
-         try: await asyncssh.scp(paths.values(), (conn, remote_cert_dir), preserve = True)
-         except asyncssh.SFTPError as exc:
-            self.log.error(f"Singleuser server for user {ssh_username} failed to start: Failed to copy internal SSL certificates to {workdir}")
-            raise web.HTTPError(400, f"Failed to initialise working directory. Please check that you have permissions to write to {workdir}, or specify a different path.")
-
-         conn.close()
+      try:
+         async with asyncssh.connect(self.ssh_endpoint, username=ssh_username, known_hosts=self.ssh_known_hosts, client_factory = lambda: SSHOIDCClient(token) ) as conn:
+            # Create target directory for SSL certs and ensure it is only user-accessible
+            try: 
+               result = await conn.run(f"mkdir -p \"{remote_cert_dir}\"; chmod 0700 \"{remote_cert_dir}\";")
+            except Exception as e:
+               self.log.error(f"Singleuser server for user {ssh_username} failed to start: Failure while running mkdir command. Exception {type(e).__name__}, arguments: {e.args}")
+               raise web.HTTPerror(400, f"Failed to connect to job submitter node as user {ssh_username}.")
+            status = result.exit_status
+            if status != 0:
+               self.log.error(f"Singleuser server for user {ssh_username} failed to start: Could not create directory {workdir} for internal SSL certificates")
+               raise web.HTTPError(400, f"Failed to initialise working directory. Please check that you have permissions to write to {workdir}, or specify a different path.")
+            # Copy locally generated cert/key to server ("preserve" to keep proper permission modes)
+            try: await asyncssh.scp(paths.values(), (conn, remote_cert_dir), preserve = True)
+            except asyncssh.SFTPError as exc:
+               self.log.error(f"Singleuser server for user {ssh_username} failed to start: Failed to copy internal SSL certificates to {workdir}")
+               raise web.HTTPError(400, f"Failed to initialise working directory. Please check that you have permissions to write to {workdir}, or specify a different path.")
+   
+            conn.close()
+      except asyncssh.Error as e:
+         self.log.error(f"Singleuser server for user {ssh_username} failed to start: Unable to establish SSH connection to submitter. Exception {type(e).__name__}, arguments: {e.args}")
+         raise web.HTTPError(500, f"Failed to connect to job submitter node as user {ssh_username}: {e.reason}")
       remote_cert_paths = {key: remote_cert_dir + os.path.basename(localpath) for (key,localpath) in paths.items()}
       return remote_cert_paths
 
