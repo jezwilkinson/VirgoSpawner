@@ -74,6 +74,10 @@ class VirgoSpawner(Spawner):
       help="Known hosts to be used for SSH host verification. If set to None, host verification is disabled.",
       config=True)
 
+   workdir_required_prefix = Unicode("",
+      help="Required directory prefix for validating user dir (e.g. mount point for shared storage)",
+      config=True)
+   
    def _options_form_default(self):
       """
       Options form that is presented to the user after login, before spawning the single-user notebook
@@ -328,9 +332,9 @@ class VirgoSpawner(Spawner):
       If everything is fine, return None.
       If any issues are identified, reset the value to its default and raise an error.
       """
-      pathspec_whitelist=r'^[a-zA-Z0-9/._ -]*$'
-      options_whitelist=r'^[a-zA-Z0-9_-]*$'
-
+      pathspec_whitelist=re.compile(r'^[a-zA-Z0-9/._ -]*$')
+      options_whitelist=re.compile(r'^[a-zA-Z0-9_-]*$')
+   
       if opts['num_cpus'] > self.slurm_max_requestable_CPUs or opts['num_cpus'] < 1:
          raise ValueError(
             f"Invalid number of CPUs given / Ungültige Anzahl von CPUs gegeben (1-32)"
@@ -342,9 +346,10 @@ class VirgoSpawner(Spawner):
             if opts[item] > self.slurm_max_requestable_CPUs or opts[item] < 1:
                failed_items.append(item)
          elif 'workdir' in item:
-            if not re.match(pathspec_whitelist, str(opts[item])):
+            # For workdir: check that there are no invalid characters; string is not empty; required mount point is used if configured by admin
+            if (not pathspec_whitelist.match(str(opts[item]))) or (item == "") or (self.workdir_required_prefix and not re.match(f"^{self.workdir_required_prefix}")):
                failed_items.append(item)
-         elif not re.match(options_whitelist, str(opts[item])):
+         elif not options_whitelist.match(str(opts[item])):
             failed_items.append(item)
       if failed_items:
          for item in failed_items:
