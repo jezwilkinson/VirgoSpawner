@@ -175,86 +175,84 @@ class VirgoSpawner(Spawner):
       = Step 0 of job: srun --jobid {JOBID} -- $(print random port and hostname) : retrieve port, return it
       = Step 1 of job: srun --jobid {JOBID} /path/to/jupyterhub-singleuser : Actually run the server (having passed the hostname and port to the jupyterhub URL variable)
       """
-
-      slurmscript = "unset SSH_ORIGINAL_COMMAND; "
-      slurmscript += f"export WORKDIR='{workdir}' JUPYTERHUB_CONTAINER={self.apptainer_path} NUM_CPUS={num_cpus} JUPYTERHUB_SINGLEUSER_PATH={self.singleuser_path}; " # export PARTITION={partition}; export RESERVATION={reservation};
+      slurmscript_salloc = "unset SSH_ORIGINAL_COMMAND; "
+      slurmscript_salloc += f"export WORKDIR='{workdir}' JUPYTERHUB_CONTAINER={self.apptainer_path} NUM_CPUS={num_cpus} JUPYTERHUB_SINGLEUSER_PATH={self.singleuser_path}; " # export PARTITION={partition}; export RESERVATION={reservation};
       if self.slurm_chgroup: # DEBUG: Switch GID for allocation if required
-         slurmscript += f"sg {self.slurm_chgroup} -c \""
+         slurmscript_salloc += f"sg {self.slurm_chgroup} -c \""
 
-      slurmscript +=  "salloc --no-shell --job-name=jupyterhub_reservation --cpus-per-task=${NUM_CPUS}"
+      slurmscript_salloc +=  "salloc --no-shell --job-name=jupyterhub_reservation --cpus-per-task=${NUM_CPUS}"
       if partition:
-        slurmscript += f" --partition={partition}"
+        slurmscript_salloc += f" --partition={partition}"
       if reservation:
-         slurmscript += f" --reservation={reservation}"
+         slurmscript_salloc += f" --reservation={reservation}"
       if req_GPU:
-         slurmscript += f" {self.slurm_gpu_reservation_args}"
+         slurmscript_salloc += f" {self.slurm_gpu_reservation_args}"
       if self.slurm_chgroup: # terminate chgroup command if invoked
-         slurmscript += "\""
-      slurmscript += "; "
-      slurmscript += "if [ $? != 0 ]; then exit 1; fi ; " ##  check return code from salloc ; if error in allocation, quit here
-      slurmscript += "QUEUE=$(squeue -u ${USER} -o '%i %N' -S +i | tail -n 1); " ## retrieve last job ID for user
-      slurmscript += "JOBID=$(cut -d' ' -f1 <<< $QUEUE); "
-      slurmscript += "HOSTNAME=$(cut -d' ' -f2 <<< $QUEUE); "
+         slurmscript_salloc += "\""
+      slurmscript_salloc += "; "
+      slurmscript_salloc += "if [ $? != 0 ]; then exit 1; fi ; " ##  check return code from salloc ; if error in allocation, quit here
+      slurmscript_salloc += "QUEUE=$(squeue -u ${USER} -o '%i %N' -S +i | tail -n 1); " ## retrieve last job ID for user
+      slurmscript_salloc += "JOBID=$(cut -d' ' -f1 <<< $QUEUE); "
+      slurmscript_salloc += "HOSTNAME=$(cut -d' ' -f2 <<< $QUEUE); "
+      slurmscript_salloc += "echo $JOBID $HOSTNAME;"
 
-      # Job Step 0: check for free port on allocated host
-      slurmscript += "PORT=$( srun --jobid=$JOBID --job-name='jupyterhub_port' -- /usr/bin/apptainer exec ${JUPYTERHUB_CONTAINER} ${JUPYTERHUB_SINGLEUSER_PATH}/python3 -c  'from jupyterhub.utils import random_port; print(random_port())'); "
-      slurmscript += "if [ \"$PORT\" = 0 ] || [ \"$PORT\" == '' ]; then scancel $JOBID; exit 2; fi; " # Tear down allocation and halt spawning if port allocation failed
-
-      # Job Step 1
-      # Load JupyterHub environment variables as inputs to srun
-      env = super(VirgoSpawner, self).get_env()
-      slurmscript += "RET=$("
       
-      for item in env.items():
-         if ("SCOPE" in item[0]):  # JUPYTERHUB_*_SCOPE variables are JSON arrays and need to be specially quoted
-            slurmscript += " %s='%s' " % item  
-         elif ("JUPYTERHUB_SERVICE_URL" not in item[0] and "SSH_ACCESS_TOKEN" not in item[0]): # Listening port for single-user server set dynamically here
-            slurmscript += " %s=%s " % item
-      slurmscript += " JUPYTERHUB_SERVICE_URL=https://0.0.0.0:$PORT/user/${USER}/ "
-      
-      # Additional variables for Jupyter runtime to avoid trying to use home dir
-      slurmscript += "JUPYTER_DATA_DIR=\"${WORKDIR}/.jupy/data\" "
-      slurmscript += "JUPYTER_CONFIG_PATH=\"${WORKDIR}/.jupy/conf\" "
-      
-      slurmscript += "srun --output=\"${WORKDIR}/.jupy/jupy_out.out\" --chdir=\"${WORKDIR}\"  --jobid=$JOBID --job-name='jupyterhub_singleuser' -- "
-      slurmscript += "/usr/bin/apptainer exec -B /tmp -B /lustre ${JUPYTERHUB_CONTAINER} ${JUPYTERHUB_SINGLEUSER_PATH}/jupyterhub-singleuser --no-browser >> \"${WORKDIR}/.jupy/jupyterlog.log\" 2>&1 & ); "
-      slurmscript += "sleep 5; "
-      slurmscript += "STATUS=$(squeue --step \"${JOBID}.1\" | grep ${JOBID}); "      # Check that the job step containing the server didn't immediately fail
-      slurmscript += "if [ \"$STATUS\" == \"\" ]; then scancel $JOBID; exit 3; fi; " # Tear down allocation if creation of single-user notebook failed
-      slurmscript += "echo $JOBID $HOSTNAME $PORT;"
-      self.log.debug(slurmscript)
-      auth_state = await self.user.get_auth_state()
-      token = auth_state['exchanged_tokens']['ssh']
       self.push_status("Establishing SSH connection to submitter...")
       # Perform SSH connection and run generated script
       try:
-         async with asyncssh.connect(self.ssh_endpoint, username=ssh_username, client_factory = lambda: SSHOIDCClient(token), known_hosts=self.ssh_known_hosts) as conn:
+         async with await self.connect_ssh() as conn:
+            # Perform task allocation
             self.push_status("Waiting for Slurm cluster allocation...")
-            result = await conn.run(slurmscript)
-            self.push_status("started slurmscript")
-            status = result.exit_status
-            stdout = result.stdout
-            stderr = result.stderr
-            self.log.debug(f"stdout was {stdout}")
-            self.log.debug(f"stderr was {stderr}")
-            if status != 0:
-               if status == 1:
-                  reason = "Job allocation failed with the following error: "
-                  reason += re.search(r'.*salloc: error:.*',stderr).string
-               elif status == 2:           
-                  reason = "Port allocation on worker node failed."
-               elif status == 3:
-                  reason = "Failed to start single-user server process."
-               else:
-                  reason = "Undefined reason."
-               self.log.error(f"Server for user {self.user.name} failed to start: {reason}")
-               conn.close()
-               raise web.HTTPError(500, f"Unable to start server over SLURM. {reason}")
-
-            job_id, hostname, port = stdout.split()
+            
+            result_salloc = await self.send_ssh_command(conn, slurmscript_salloc)
+            # salloc script returns string of "$JOBID $HOSTNAME". Parse this here"
+            stdout_salloc = result_salloc.stdout
+            job_id, hostname = stdout_salloc.split()
             self.slurm_job_id = int(job_id)
             self.slurm_job_hostname = hostname + self.slurm_node_suffix
-            self.slurm_job_hostport = int(port)
+            self.push_status(f"Slurm job started with ID {job_id}. Starting JupyterLab session...")
+            # Job Step 0: check for free port on allocated host
+            slurmscript_portdef = f"export JOBID={job_id} JUPYTERHUB_CONTAINER={self.apptainer_path} JUPYTERHUB_SINGLEUSER_PATH={self.singleuser_path}; " # export PARTITION={partition}; export RESERVATION={reservation};
+            slurmscript_portdef += "PORT=$( srun --jobid=$JOBID --job-name='jupyterhub_port' -- /usr/bin/apptainer exec ${JUPYTERHUB_CONTAINER} ${JUPYTERHUB_SINGLEUSER_PATH}/python3 -c  'from jupyterhub.utils import random_port; print(random_port())'); "
+            slurmscript_portdef += "if [ \"$PORT\" = 0 ] || [ \"$PORT\" == '' ]; then scancel $JOBID; exit 2; fi; " # Tear down allocation and halt spawning if port allocation failed
+            slurmscript_portdef += "echo $PORT;"
+            result_portdef = await self.send_ssh_command(conn,slurmscript_portdef)
+            # slurmscript_portdef returns the assigned port number as stdout
+            stdout_portdef = result_portdef.stdout
+            self.slurm_job_hostport = int(stdout_portdef)
+
+            # Start the singleuser server with the defined port
+
+            # Job Step 1
+            # Load JupyterHub environment variables as inputs to srun
+            env = super(VirgoSpawner, self).get_env()
+            slurmscript_singleuser = f"export WORKDIR={workdir} JOBID={job_id} JUPYTERHUB_SINGLEUSER_PATH={self.singleuser_path} JUPYTERHUB_CONTAINER={self.apptainer_path}; "
+            slurmscript_singleuser += "RET=$("
+
+            for item in env.items():
+               if ("SCOPE" in item[0]):  # JUPYTERHUB_*_SCOPE variables are JSON arrays and need to be specially quoted
+                  slurmscript_singleuser += " %s='%s' " % item  
+               elif ("JUPYTERHUB_SERVICE_URL" not in item[0] and "SSH_ACCESS_TOKEN" not in item[0]): # Listening port for single-user server set dynamically here
+                  slurmscript_singleuser += " %s=%s " % item
+            slurmscript_singleuser += f" JUPYTERHUB_SERVICE_URL=https://0.0.0.0:{self.slurm_job_hostport}/user/${self.user.name}/ "
+            # Additional variables for Jupyter runtime to avoid trying to use home dir
+            slurmscript_singleuser += "JUPYTER_DATA_DIR=\"${WORKDIR}/.jupy/data\" "
+            slurmscript_singleuser += "JUPYTER_CONFIG_PATH=\"${WORKDIR}/.jupy/conf\" "
+
+            slurmscript_singleuser += "srun --output=\"${WORKDIR}/.jupy/jupy_out.out\" --chdir=\"${WORKDIR}\"  --jobid=$JOBID --job-name='jupyterhub_singleuser' -- "
+            slurmscript_singleuser += "/usr/bin/apptainer exec -B /tmp -B /lustre ${JUPYTERHUB_CONTAINER} ${JUPYTERHUB_SINGLEUSER_PATH}/jupyterhub-singleuser --no-browser >> \"${WORKDIR}/.jupy/jupyterlog.log\" 2>&1 & ); "
+            slurmscript_singleuser += "sleep 5; "
+            slurmscript_singleuser += "STATUS=$(squeue --step \"${JOBID}.1\" | grep ${JOBID}); "      # Check that the job step containing the server didn't immediately fail
+            slurmscript_singleuser += "if [ \"$STATUS\" == \"\" ]; then scancel $JOBID; exit 3; fi; " # Tear down allocation if creation of single-user notebook failed
+            slurmscript_singleuser += "exit 0;"
+
+            result_singleuser = await self.send_ssh_command(conn,slurmscript_singleuser)
+            stdout = result_singleuser.stdout
+            stderr = result_singleuser.stderr
+            self.log.debug(f"stdout was {stdout}")
+            self.log.debug(f"stderr was {stderr}")
+
+            self.push_status(f"Started JupyterLab server on allocated job {job_id}. Establishing connection to session...")
             self.log.debug(f"Server for user {self.user.name} was spawned with job ID {self.slurm_job_id} on hostname {self.slurm_job_hostname}, listening on port {self.slurm_job_hostport}")
             conn.close()
       # Catch exceptions from establishing SSH connection
@@ -279,10 +277,8 @@ class VirgoSpawner(Spawner):
       Send a SLURM command to the process (used by poll() and stop())
       """
       ssh_username = self.user.name
-      auth_state = await self.user.get_auth_state()
-      token = auth_state['exchanged_tokens']['ssh']
       try:
-         async with asyncssh.connect(self.ssh_endpoint, username=ssh_username, client_factory = lambda: SSHOIDCClient(token), known_hosts=self.ssh_known_hosts) as conn:
+         async with await self.connect_ssh() as conn:
             result = await conn.run("%s %d" % (command, self.slurm_job_id))
             stdout = result.stdout
             stderr = result.stderr
@@ -384,15 +380,12 @@ class VirgoSpawner(Spawner):
              server to be launched.
             
       """
-
       workdir = self.user_options['workdir']      
       ssh_username = self.user.name
-      auth_state = await self.user.get_auth_state()
-      token = auth_state['exchanged_tokens']['ssh']
       remote_cert_dir = workdir + "/.jupy/.certs/"
       self.push_status("Initialising working directory...") 
       try:
-         async with asyncssh.connect(self.ssh_endpoint, username=ssh_username, known_hosts=self.ssh_known_hosts, client_factory = lambda: SSHOIDCClient(token) ) as conn:
+         async with await self.connect_ssh() as conn:
             # Create target directory for SSL certs and ensure it is only user-accessible
             try: 
                result = await conn.run(f"mkdir -p \"{remote_cert_dir}\"; chmod 0700 \"{remote_cert_dir}\";")
@@ -417,19 +410,25 @@ class VirgoSpawner(Spawner):
       return remote_cert_paths
 
    def push_status(self, message):
+      """
+      Append event message to self.spawn_progress_events to be printed on spawner progress bar.
+      """
       self.spawn_progress_events.append({"message": message})
 
    async def progress(self):
+      """
+      Handler for spawning progress bar
+      """
       progress = 0
       next_event = 0
       len_events = 0
       while True:
-         events = self.progress_events
+         events = self.spawn_progress_events
          len_events = len(events)
          if next_event < len_events:
             for i in range (next_event, len_events):
                event = events[i]
-               progress += (90 - progress) / 4
+               progress += (90 - progress) / 6
                yield {
                   'progress': int(progress),
                   'raw_event': event, 
@@ -440,4 +439,29 @@ class VirgoSpawner(Spawner):
             break
          await asyncio.sleep(1)
 
+   async def connect_ssh(self):
+      auth_state = await self.user.get_auth_state()
+      token = auth_state['exchanged_tokens']['ssh']
+      return await asyncssh.connect(self.ssh_endpoint, username=self.user.name, known_hosts=self.ssh_known_hosts, client_factory=lambda: SSHOIDCClient(token))
 
+   async def send_ssh_command(self, conn, script):
+      """
+      Send command to remote session and handle response.
+      """
+      result = await conn.run(script)
+      status = result.exit_status
+      if status != 0:
+         if status == 1:
+            reason = "Job allocation failed with the following error: "
+            reason += re.search(r'.*salloc: error:.*',stderr).string
+         elif status == 2:           
+            reason = "Port allocation on worker node failed."
+         elif status == 3:
+            reason = "Failed to start single-user server process."
+         else:
+            reason = "Undefined reason."
+         self.log.error(f"Server for user {self.user.name} failed to start: {reason}")
+         self.log.error(f"stderr was {result.stderr}")
+         conn.close()
+         raise web.HTTPError(500, f"Unable to start server over SLURM. {reason}")
+      return result
