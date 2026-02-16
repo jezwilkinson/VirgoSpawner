@@ -3,6 +3,7 @@ from jupyterhub.spawner import Spawner
 from traitlets import Bool, Integer, List, Unicode, default
 from tornado import web
 import asyncssh
+import asyncio
 from .sshoidcclient import SSHOIDCClient
 import re
 import os.path
@@ -31,8 +32,6 @@ class VirgoSpawner(Spawner):
       help="Maximum number of CPUs that the user can request",
       config=True)
 
-
-   
 # Default values for user-addressable job options
 
    slurm_chgroup = Unicode("",
@@ -43,18 +42,19 @@ class VirgoSpawner(Spawner):
       help="Switch to request GPU in job (default false)")
 
    slurm_default_num_cpus = Integer(1,
-      help="Requested number of CPUs for job")
+      help="Default value for number of CPUs to allocate",
+      config=True)
 
    slurm_default_partition = Unicode("main",
-      help="Requested Slurm partition for job",
+      help="Default Slurm partition to request for job",
       config=True)
 
    slurm_default_reservation = Unicode("",
-      help="Reservation to submit Slurm job under",
+      help="Default reservation for Slurm allocation",
       config=True)
    
    slurm_default_working_directory = Unicode("",
-      help="Cluster storage directory to run session in",
+      help="Default working directory on cluster storage for user sessions",
       config=True)
 
    slurm_gpu_reservation_args = Unicode("--gres=gpu:1",
@@ -64,7 +64,9 @@ class VirgoSpawner(Spawner):
    slurm_node_suffix = Unicode("",
       help="Domain suffix for hosts on target cluster",
       config=True)   
-##
+
+   spawn_progress_events = List([],
+      help="List of progress events for rendering spawn progress bar.")
 
    ssh_endpoint=Unicode("",
       help="Endpoint for SSH connection to submitter node",
@@ -197,7 +199,7 @@ class VirgoSpawner(Spawner):
       # Job Step 0: check for free port on allocated host
       slurmscript += "PORT=$( srun --jobid=$JOBID --job-name='jupyterhub_port' -- /usr/bin/apptainer exec ${JUPYTERHUB_CONTAINER} ${JUPYTERHUB_SINGLEUSER_PATH}/python3 -c  'from jupyterhub.utils import random_port; print(random_port())'); "
       slurmscript += "if [ \"$PORT\" = 0 ] || [ \"$PORT\" == '' ]; then scancel $JOBID; exit 2; fi; " # Tear down allocation and halt spawning if port allocation failed
-      slurmscript += "unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY; "
+
       # Job Step 1
       # Load JupyterHub environment variables as inputs to srun
       env = super(VirgoSpawner, self).get_env()
@@ -221,16 +223,18 @@ class VirgoSpawner(Spawner):
       slurmscript += "if [ \"$STATUS\" == \"\" ]; then scancel $JOBID; exit 3; fi; " # Tear down allocation if creation of single-user notebook failed
       slurmscript += "echo $JOBID $HOSTNAME $PORT;"
       self.log.debug(slurmscript)
-
-      token = self.environment['SSH_ACCESS_TOKEN']
+      auth_state = await self.user.get_auth_state()
+      token = auth_state['exchanged_tokens']['ssh']
+      self.push_status("Establishing SSH connection to submitter...")
       # Perform SSH connection and run generated script
       try:
          async with asyncssh.connect(self.ssh_endpoint, username=ssh_username, client_factory = lambda: SSHOIDCClient(token), known_hosts=self.ssh_known_hosts) as conn:
+            self.push_status("Waiting for Slurm cluster allocation...")
             result = await conn.run(slurmscript)
+            self.push_status("started slurmscript")
             status = result.exit_status
             stdout = result.stdout
             stderr = result.stderr
-
             self.log.debug(f"stdout was {stdout}")
             self.log.debug(f"stderr was {stderr}")
             if status != 0:
@@ -308,6 +312,7 @@ class VirgoSpawner(Spawner):
       """Clear current state after shutdown"""
       super().clear_state()
       self.slurm_job_id = 0
+      self.spawn_progress_events = []
 
    def apply_user_options(self, spawner, user_options):
       """
@@ -382,8 +387,10 @@ class VirgoSpawner(Spawner):
 
       workdir = self.user_options['workdir']      
       ssh_username = self.user.name
-      token = self.environment['SSH_ACCESS_TOKEN']
+      auth_state = await self.user.get_auth_state()
+      token = auth_state['exchanged_tokens']['ssh']
       remote_cert_dir = workdir + "/.jupy/.certs/"
+      self.push_status("Initialising working directory...") 
       try:
          async with asyncssh.connect(self.ssh_endpoint, username=ssh_username, known_hosts=self.ssh_known_hosts, client_factory = lambda: SSHOIDCClient(token) ) as conn:
             # Create target directory for SSL certs and ensure it is only user-accessible
@@ -394,18 +401,43 @@ class VirgoSpawner(Spawner):
                raise web.HTTPerror(400, f"Failed to connect to job submitter node as user {ssh_username}.")
             status = result.exit_status
             if status != 0:
-               self.log.error(f"Singleuser server for user {ssh_username} failed to start: Could not create directory {workdir} for internal SSL certificates")
+               self.log.error(f"Singleuser server for user {ssh_username} failed to start: Could not create directory {remote_cert_dir} for internal SSL certificates")
                raise web.HTTPError(400, f"Failed to initialise working directory. Please check that you have permissions to write to {workdir}, or specify a different path.")
             # Copy locally generated cert/key to server ("preserve" to keep proper permission modes)
             try: await asyncssh.scp(paths.values(), (conn, remote_cert_dir), preserve = True)
             except asyncssh.SFTPError as exc:
-               self.log.error(f"Singleuser server for user {ssh_username} failed to start: Failed to copy internal SSL certificates to {workdir}")
+               self.log.error(f"Singleuser server for user {ssh_username} failed to start: Failed to copy internal SSL certificates to {remote_cert_dir}")
                raise web.HTTPError(400, f"Failed to initialise working directory. Please check that you have permissions to write to {workdir}, or specify a different path.")
-   
+            self.push_status("Working directory initialised")
             conn.close()
       except asyncssh.Error as e:
          self.log.error(f"Singleuser server for user {ssh_username} failed to start: Unable to establish SSH connection to submitter. Exception {type(e).__name__}, arguments: {e.args}")
          raise web.HTTPError(500, f"Failed to connect to job submitter node as user {ssh_username}: {e.reason}")
       remote_cert_paths = {key: remote_cert_dir + os.path.basename(localpath) for (key,localpath) in paths.items()}
       return remote_cert_paths
+
+   def push_status(self, message):
+      self.spawn_progress_events.append({"message": message})
+
+   async def progress(self):
+      progress = 0
+      next_event = 0
+      len_events = 0
+      while True:
+         events = self.progress_events
+         len_events = len(events)
+         if next_event < len_events:
+            for i in range (next_event, len_events):
+               event = events[i]
+               progress += (90 - progress) / 4
+               yield {
+                  'progress': int(progress),
+                  'raw_event': event, 
+                  'message': event['message']
+               }
+            next_event = len_events
+         if self.ready: # Stop progress loop when server finishes spawning
+            break
+         await asyncio.sleep(1)
+
 
