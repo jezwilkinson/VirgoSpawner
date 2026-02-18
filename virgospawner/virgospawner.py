@@ -62,7 +62,7 @@ class VirgoSpawner(Spawner):
       config=True)
 
    slurm_node_suffix = Unicode("",
-      help="Domain suffix for hosts on target cluster",
+      help="DNS suffix for hosts on target cluster",
       config=True)   
 
    spawn_progress_events = List([],
@@ -76,7 +76,7 @@ class VirgoSpawner(Spawner):
       help="Known hosts to be used for SSH host verification. If set to None, host verification is disabled.",
       config=True)
 
-   workdir_required_prefix = Unicode("",
+   workdir_required_prefix = Unicode("/",
       help="Required directory prefix for validating user dir (e.g. mount point for shared storage)",
       config=True)
    
@@ -118,8 +118,8 @@ class VirgoSpawner(Spawner):
       <br />
       <div class="form-group">
          <label>Does your task require a GPU? / Braucht Ihre Anwendung einen Grafikprozessor?</label>
-         &nbsp; <label for="gpu_yes"><input name="req_GPU" id="gpu_yes" type="radio" value="1"> Yes</label>
-         &nbsp; <label for="gpu_no"> <input name="req_GPU" id="gpu_no"  type="radio" value="0" checked> No</label>
+         &nbsp; <label for="gpu_yes"><input name="req_gpu" id="gpu_yes" type="radio" value="1"> Yes</label>
+         &nbsp; <label for="gpu_no"> <input name="req_gpu" id="gpu_no"  type="radio" value="0" checked> No</label>
       </div>
       <br />
       <div class="form-group">
@@ -137,7 +137,7 @@ class VirgoSpawner(Spawner):
       options['reservation'] = formdata['reservation'][0].strip()
       options['partition'] = formdata['partition'][0].strip()
       options['workdir'] = formdata['workdir'][0].strip()
-      options['req_GPU'] = bool(int(formdata['req_GPU'][0]))
+      options['req_gpu'] = bool(int(formdata['req_gpu'][0]))
       options['num_cpus'] = int(formdata['num_cpus'][0].strip() or self.slurm_default_num_cpus)
       self.validate_useroptions(options)
 
@@ -148,7 +148,8 @@ class VirgoSpawner(Spawner):
          "reservation": self.slurm_default_reservation,
          "partition": self.slurm_default_partition,
          "workdir": self.slurm_default_working_directory,
-         "num_cpus": self.slurm_default_num_cpus
+         "num_cpus": self.slurm_default_num_cpus,
+         "req_gpu": False
       }
       return default_val[key]
 
@@ -163,7 +164,7 @@ class VirgoSpawner(Spawner):
       partition = self.user_options['partition']
       reservation = self.user_options['reservation']
       num_cpus = self.user_options['num_cpus']
-      req_GPU = self.user_options['req_GPU']
+      req_gpu = self.user_options['req_gpu']
 
       ssh_username = self.user.name
 
@@ -185,7 +186,7 @@ class VirgoSpawner(Spawner):
         slurmscript_salloc += f" --partition={partition}"
       if reservation:
          slurmscript_salloc += f" --reservation={reservation}"
-      if req_GPU:
+      if req_gpu:
          slurmscript_salloc += f" {self.slurm_gpu_reservation_args}"
       if self.slurm_chgroup: # terminate chgroup command if invoked
          slurmscript_salloc += "\""
@@ -277,6 +278,9 @@ class VirgoSpawner(Spawner):
       Send a SLURM command to the process (used by poll() and stop())
       """
       ssh_username = self.user.name
+      if self.slurm_job_id == 0: # Job ID does not exist; do nothing
+         self.log.error(f"send_slurm_command: {ssh_username}'s server tried to send '{command}' to undefined job")
+         return True
       try:
          async with await self.connect_ssh() as conn:
             result = await conn.run("%s %d" % (command, self.slurm_job_id))
@@ -284,9 +288,9 @@ class VirgoSpawner(Spawner):
             stderr = result.stderr
             retcode = result.exit_status
       except asyncssh.Error as e:
-         self.log.error(f"SSH error: Failed to connect to Slurm node while sending {command} to job {self.slurm_job_id} for user {self.user.name}: {e.reason}")
+         self.log.error(f"SSH error: Failed to connect to Slurm node while sending {command} to job {self.slurm_job_id} for user {ssh_username}: {e.reason}")
          raise web.HTTPError(500, f"Failed to connect to job submitter node as user {ssh_username}: {e.reason}") 
-      self.log.debug(f"sending command {command} to job {self.slurm_job_id} for user {self.user.name} returned {retcode} --- {stdout} --- {stderr}")         
+      self.log.debug(f"sending command {command} to job {self.slurm_job_id} for user {ssh_username} returned {retcode} --- {stdout} --- {stderr}")         
       
       return (retcode == 0)
 
@@ -326,6 +330,8 @@ class VirgoSpawner(Spawner):
          self.user_options['workdir'] = self.defaults('workdir')
       if 'num_cpus' not in user_options or user_options['num_cpus'] == None:
          self.user_options['num_cpus'] = self.defaults('num_cpus')
+      if 'req_gpu' not in user_options:
+         self.user_options['req_gpu'] = self.defaults('req_gpu')
 
    def validate_useroptions(self, opts):
       """
@@ -333,29 +339,48 @@ class VirgoSpawner(Spawner):
       If everything is fine, return None.
       If any issues are identified, reset the value to its default and raise an error.
       """
+      # Allowable characters in user-definable options
       pathspec_whitelist=re.compile(r'^[a-zA-Z0-9/._ -]*$')
       options_whitelist=re.compile(r'^[a-zA-Z0-9_-]*$')
-   
-      if opts['num_cpus'] > self.slurm_max_requestable_CPUs or opts['num_cpus'] < 1:
-         raise ValueError(
-            f"Invalid number of CPUs given / Ungültige Anzahl von CPUs gegeben (1-32)"
-         )
+      # Check for required path prefix if set in config
+      if self.workdir_required_prefix:
+         pathspec_prefix=re.compile(f"^{self.workdir_required_prefix}")
+      # Reject path specs containing ".." to prevent traversal out of required prefix
+      traversal=re.compile(r'\.\.')
       failed_items = list()
+      validation_errors = list()
+
       # Test user strings against whitelisted characters and throw error if invalid
-      for item in opts:
+      for item, opt in opts.items():
          if 'num_cpus' in item:
-            if opts[item] > self.slurm_max_requestable_CPUs or opts[item] < 1:
+            if not isinstance(opt, int) or opt > self.slurm_max_requestable_CPUs or opt < 1:
                failed_items.append(item)
+               validation_errors.append(f"Invalid number of CPUs given (must be between 1-{self.slurm_max_requestable_CPUs})")
          elif 'workdir' in item:
+            workdir_ok = True
             # For workdir: check that there are no invalid characters; string is not empty; required mount point is used if configured by admin
-            if (not pathspec_whitelist.match(str(opts[item]))) or (item == "") or (self.workdir_required_prefix and not re.match(f"^{self.workdir_required_prefix}")):
+            if (not pathspec_whitelist.match(str(opt)) or traversal.findall(str(opt))):
+               workdir_ok = False
+               validation_errors.append("Working directory path contains invalid characters.")
+            if (opt == ""):
+               workdir_ok = False
+               validation_errors.append("Working directory must not be blank")
+            if (self.workdir_required_prefix and not pathspec_prefix.match(str(opt))):
+               workdir_ok = False
+               validation_errors.append(f"Working directory must begin with {self.workdir_required_prefix}")
+            if not workdir_ok: # Only flag workdir in issue list once, even if multiple problems
                failed_items.append(item)
-         elif not options_whitelist.match(str(opts[item])):
+         elif 'req_gpu' in item:
+            if not isinstance(opt, bool):
+               failed_items.append(item)
+               validation_errors.append("Invalid option for GPU request (true or false)")
+         elif not options_whitelist.match(str(opt)):
             failed_items.append(item)
+            validation_errors.append(f"Invalid characters in option for {item}")
       if failed_items:
          for item in failed_items:
             self.user_options[item] = self.defaults(item)
-         raise web.HTTPError(400,f"User options for {', '.join(str(i) for i in failed_items)} were invalid. Values have been reset to their defaults. Please try spawning again.")
+         raise web.HTTPError(400,f"Invalid user options: {'; '.join(str(i) for i in validation_errors)}. Values have been reset to their defaults. Please check these issues and try again.")
          return failed_items
       else:
          return None
@@ -450,11 +475,12 @@ class VirgoSpawner(Spawner):
       """
       result = await conn.run(script)
       status = result.exit_status
+      stderr = result.stderr
       if status != 0:
          if status == 1:
-            reason = "Job allocation failed with the following error: "
-            reason += re.search(r'.*salloc: error:.*',stderr).string
-         elif status == 2:           
+            reason = "Slurm job allocation failed with the following error: "
+            reason += re.search(r'salloc: error: (.*)$',stderr).group(1)
+         elif status == 2:
             reason = "Port allocation on worker node failed."
          elif status == 3:
             reason = "Failed to start single-user server process."
@@ -463,5 +489,5 @@ class VirgoSpawner(Spawner):
          self.log.error(f"Server for user {self.user.name} failed to start: {reason}")
          self.log.error(f"stderr was {result.stderr}")
          conn.close()
-         raise web.HTTPError(500, f"Unable to start server over SLURM. {reason}")
+         raise web.HTTPError(500, f"{reason}")
       return result
