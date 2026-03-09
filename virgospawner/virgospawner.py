@@ -181,7 +181,7 @@ class VirgoSpawner(Spawner):
       if self.slurm_chgroup: # DEBUG: Switch GID for allocation if required
          slurmscript_salloc += f"sg {self.slurm_chgroup} -c \""
 
-      slurmscript_salloc +=  "salloc --no-shell --job-name=jupyterhub_reservation --cpus-per-task=${NUM_CPUS}"
+      slurmscript_salloc +=  "salloc --no-shell --job-name=jupyterhub_alloc --cpus-per-task=${NUM_CPUS}"
       if partition:
         slurmscript_salloc += f" --partition={partition}"
       if reservation:
@@ -240,7 +240,7 @@ class VirgoSpawner(Spawner):
             slurmscript_singleuser += "JUPYTER_DATA_DIR=\"${WORKDIR}/.jupy/data\" "
             slurmscript_singleuser += "JUPYTER_CONFIG_PATH=\"${WORKDIR}/.jupy/conf\" "
 
-            slurmscript_singleuser += "srun --output=\"${WORKDIR}/.jupy/jupy_out.out\" --chdir=\"${WORKDIR}\"  --jobid=$JOBID --job-name='jupyterhub_singleuser' -- "
+            slurmscript_singleuser += "srun --output=\"${WORKDIR}/.jupy/jupy_out.out\" --chdir=\"${WORKDIR}\"  --jobid=$JOBID --job-name='jupyterhub_session' -- "
             slurmscript_singleuser += "/usr/bin/apptainer exec -B /tmp -B /lustre ${JUPYTERHUB_CONTAINER} ${JUPYTERHUB_SINGLEUSER_PATH}/jupyterhub-singleuser --no-browser >> \"${WORKDIR}/.jupy/jupyterlog.log\" 2>&1 & ); "
             slurmscript_singleuser += "sleep 5; "
             slurmscript_singleuser += "STATUS=$(squeue --step \"${JOBID}.1\" | grep ${JOBID}); "      # Check that the job step containing the server didn't immediately fail
