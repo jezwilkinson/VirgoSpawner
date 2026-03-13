@@ -17,6 +17,10 @@ class VirgoSpawner(Spawner):
    singleuser_config_path = Unicode("",
       help="Path to default config for single-user server within container",
       config=True)
+   
+   singleuser_extra_args = List([],
+      help="List of additional args to pass to the single-user server",
+      config=True)
 
    singleuser_path = Unicode("/opt/jupyterhub/bin",
       help="Path to 'bin' directory in single-user server's python environment within container",
@@ -248,6 +252,9 @@ class VirgoSpawner(Spawner):
             slurmscript_singleuser += "/usr/bin/apptainer exec -B /tmp -B /lustre ${JUPYTERHUB_CONTAINER} ${JUPYTERHUB_SINGLEUSER_PATH}/jupyterhub-singleuser --no-browser "
             if self.singleuser_config_path:
                slurmscript_singleuser += f"--config {self.singleuser_config_path} "
+            if self.singleuser_extra_args:
+               for arg in self.singleuser_extra_args:
+                  slurmscript_singleuser += f"{arg} "
             slurmscript_singleuser += ">> \"${WORKDIR}/.jupy/jupyterlog.log\" 2>&1 & ); "
             slurmscript_singleuser += "sleep 5; "
             slurmscript_singleuser += "STATUS=$(squeue --step \"${JOBID}.1\" | grep ${JOBID}); "      # Check that the job step containing the server didn't immediately fail
