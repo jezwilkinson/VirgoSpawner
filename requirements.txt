@@ -1,4 +1,5 @@
-jupyterhub
+jupyterhub>=5.4.6
+keycloakauthenticator>=4.0.7
 asyncssh
 traitlets
 bcrypt
