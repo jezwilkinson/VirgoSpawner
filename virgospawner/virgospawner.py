@@ -10,7 +10,7 @@ import os.path
 
 class VirgoSpawner(Spawner):
 
-   apptainer_path = Unicode("/scratch/alice/jwilkins/singularity/singleuser_5.1.0.sif",
+   apptainer_path = Unicode("",
       help="Path to Apptainer container for single-user notebooks",
       config=True)
 
@@ -44,6 +44,10 @@ class VirgoSpawner(Spawner):
 
    slurm_chgroup = Unicode("",
       help="DEBUG: run singleuser server as this group's GID",
+      config=True)
+
+   slurm_default_args = Unicode("",
+      help="Default additional arguments to pass to Slurm job allocation",
       config=True)
 
    slurm_default_gpu = Bool(False,
@@ -174,6 +178,7 @@ class VirgoSpawner(Spawner):
       num_cpus = self.user_options['num_cpus']
       req_gpu = self.user_options['req_gpu']
 
+      slurm_default_args = self.slurm_default_args
       ssh_username = self.user.name
 
       """
@@ -196,6 +201,8 @@ class VirgoSpawner(Spawner):
          slurmscript_salloc += f" --reservation={reservation}"
       if req_gpu:
          slurmscript_salloc += f" {self.slurm_gpu_reservation_args}"
+      if slurm_default_args:
+         slurmscript_salloc += f" {slurm_default_args}"
       if self.slurm_chgroup: # terminate chgroup command if invoked
          slurmscript_salloc += "\""
       slurmscript_salloc += "; "
@@ -239,10 +246,8 @@ class VirgoSpawner(Spawner):
             slurmscript_singleuser += "RET=$("
 
             for item in env.items():
-               if ("SCOPE" in item[0]):  # JUPYTERHUB_*_SCOPE variables are JSON arrays and need to be specially quoted
-                  slurmscript_singleuser += " %s='%s' " % item  
-               elif ("JUPYTERHUB_SERVICE_URL" not in item[0] and "SSH_ACCESS_TOKEN" not in item[0]): # Listening port for single-user server set dynamically here
-                  slurmscript_singleuser += " %s=%s " % item
+               if ("JUPYTERHUB_SERVICE_URL" not in item[0] and "SSH_ACCESS_TOKEN" not in item[0]): # Listening port for single-user server set dynamically here
+                  slurmscript_singleuser += " %s='%s' " % item
             slurmscript_singleuser += f" JUPYTERHUB_SERVICE_URL=https://0.0.0.0:{self.slurm_job_hostport}/user/${self.user.name}/ "
             # Additional variables for Jupyter runtime to avoid trying to use home dir
             slurmscript_singleuser += "JUPYTER_DATA_DIR=\"${WORKDIR}/.jupy/data\" "
