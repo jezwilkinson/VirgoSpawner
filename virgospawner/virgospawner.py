@@ -1,6 +1,6 @@
 
 from jupyterhub.spawner import Spawner
-from traitlets import Bool, Integer, List, Unicode, default
+from traitlets import Bool, Dict, Integer, List, Unicode, default
 from tornado import web
 import asyncssh
 import asyncio
@@ -10,8 +10,12 @@ import os.path
 
 class VirgoSpawner(Spawner):
 
-   apptainer_path = Unicode("",
-      help="Path to Apptainer container for single-user notebooks",
+   apptainer_paths = Dict({},
+      help="Dict of possible Apptainer containers for user to pick from. Entries should be structured as 'name': 'path'.",
+      config=True)
+
+   default_container = Unicode("",
+      help="Default container to use if unspecified",
       config=True)
 
    singleuser_config_path = Unicode("",
@@ -77,6 +81,10 @@ class VirgoSpawner(Spawner):
       help="DNS suffix for hosts on target cluster",
       config=True)   
 
+   slurm_partition_options = List([],
+      help="List of possible Slurm partitions to use for job, presented to user as a dropdown list",
+      config=True)
+
    spawn_progress_events = List([],
       help="List of progress events for rendering spawn progress bar.")
 
@@ -96,7 +104,7 @@ class VirgoSpawner(Spawner):
       """
       Options form that is presented to the user after login, before spawning the single-user notebook
       """
-      
+      newline = '\n'
       maxcpu = self.slurm_max_requestable_CPUs
       if 'partition' in self.user_options:
          default_partition = self.user_options['partition']
@@ -110,7 +118,10 @@ class VirgoSpawner(Spawner):
          default_workdir = self.user_options['workdir']
       else:
          default_workdir = ""
-
+      if 'container' in self.user_options:
+         default_container = self.user_options['container']
+      else:
+         default_container = ""
       return f"""
 
       <div class="form-group">
@@ -119,9 +130,18 @@ class VirgoSpawner(Spawner):
       </div>
       <br />
       <div class="form-group">
-         <label for="partition">Slurm Partition (main, long)</label>
-         <input name="partition" class="form-control" value="{default_partition}"></input>
+         <label for="partition">Slurm Partition</label>
+         <select name="partition" class="form-select">
+           {newline.join(f'<option value="{name}"{" selected" if name==default_partition else ""}>{name}</option>' for name in self.slurm_partition_options) }
+ value="{default_partition}">
+         </select>
       </div>
+      <br />
+      <div class="form-group">
+         <label for="container">Container runtime for the session</label>
+         <select name="container" class="form-select">
+            {newline.join(f'<option value="{name}"{" selected" if name==default_container else ""}>{name}</option>' for name in self.apptainer_paths.keys()) }
+         </select>
       <br />
       <div class="form-group">
          <label for="workdir">Your working directory on /lustre / Ihre Arbeitsverzeichnis auf Lustre</label>
@@ -151,6 +171,7 @@ class VirgoSpawner(Spawner):
       options['workdir'] = formdata['workdir'][0].strip()
       options['req_gpu'] = bool(int(formdata['req_gpu'][0]))
       options['num_cpus'] = int(formdata['num_cpus'][0].strip() or self.slurm_default_num_cpus)
+      options['container'] = formdata['container'][0].strip()
       self.validate_useroptions(options)
 
       return options
@@ -161,7 +182,8 @@ class VirgoSpawner(Spawner):
          "partition": self.slurm_default_partition,
          "workdir": self.slurm_default_working_directory,
          "num_cpus": self.slurm_default_num_cpus,
-         "req_gpu": False
+         "req_gpu": False,
+         "container": self.default_container or 0,
       }
       return default_val[key]
 
@@ -177,6 +199,7 @@ class VirgoSpawner(Spawner):
       reservation = self.user_options['reservation']
       num_cpus = self.user_options['num_cpus']
       req_gpu = self.user_options['req_gpu']
+      container = self.user_options['container']
 
       slurm_default_args = self.slurm_default_args
       ssh_username = self.user.name
@@ -190,7 +213,7 @@ class VirgoSpawner(Spawner):
       = Step 1 of job: srun --jobid {JOBID} /path/to/jupyterhub-singleuser : Actually run the server (having passed the hostname and port to the jupyterhub URL variable)
       """
       slurmscript_salloc = "unset SSH_ORIGINAL_COMMAND; "
-      slurmscript_salloc += f"export WORKDIR='{workdir}' JUPYTERHUB_CONTAINER={self.apptainer_path} NUM_CPUS={num_cpus}; " # export PARTITION={partition}; export RESERVATION={reservation};
+      slurmscript_salloc += f"export WORKDIR='{workdir}' JUPYTERHUB_CONTAINER={self.apptainer_paths[container]} NUM_CPUS={num_cpus}; " # export PARTITION={partition}; export RESERVATION={reservation};
       if self.slurm_chgroup: # DEBUG: Switch GID for allocation if required
          slurmscript_salloc += f"sg {self.slurm_chgroup} -c \""
 
@@ -228,7 +251,7 @@ class VirgoSpawner(Spawner):
             self.slurm_job_hostname = hostname + self.slurm_node_suffix
             self.push_status(f"Slurm job started with ID {job_id}. Starting JupyterLab session...")
             # Job Step 0: check for free port on allocated host
-            slurmscript_portdef = f"export JOBID={job_id} JUPYTERHUB_CONTAINER={self.apptainer_path} JUPYTERHUB_SINGLEUSER_PATH={self.singleuser_path}; " # export PARTITION={partition}; export RESERVATION={reservation};
+            slurmscript_portdef = f"export JOBID={job_id} JUPYTERHUB_CONTAINER={self.apptainer_paths[container]} JUPYTERHUB_SINGLEUSER_PATH={self.singleuser_path}; " # export PARTITION={partition}; export RESERVATION={reservation};
             slurmscript_portdef += "PORT=$( srun --jobid=$JOBID --job-name='jupyterhub_port' -- /usr/bin/apptainer exec ${JUPYTERHUB_CONTAINER} ${JUPYTERHUB_SINGLEUSER_PATH}/python3 -c  'from jupyterhub.utils import random_port; print(random_port())'); "
             slurmscript_portdef += "if [ \"$PORT\" = 0 ] || [ \"$PORT\" == '' ]; then scancel $JOBID; exit 2; fi; " # Tear down allocation and halt spawning if port allocation failed
             slurmscript_portdef += "echo $PORT;"
@@ -242,7 +265,7 @@ class VirgoSpawner(Spawner):
             # Job Step 1
             # Load JupyterHub environment variables as inputs to srun
             env = super(VirgoSpawner, self).get_env()
-            slurmscript_singleuser = f"export WORKDIR={workdir} JOBID={job_id} JUPYTERHUB_SINGLEUSER_PATH={self.singleuser_path} JUPYTERHUB_CONTAINER={self.apptainer_path}; "
+            slurmscript_singleuser = f"export WORKDIR={workdir} JOBID={job_id} JUPYTERHUB_SINGLEUSER_PATH={self.singleuser_path} JUPYTERHUB_CONTAINER={self.apptainer_paths[container]}; "
             slurmscript_singleuser += "RET=$("
 
             for item in env.items():
@@ -351,6 +374,8 @@ class VirgoSpawner(Spawner):
          self.user_options['num_cpus'] = self.defaults('num_cpus')
       if 'req_gpu' not in user_options:
          self.user_options['req_gpu'] = self.defaults('req_gpu')
+      if 'container' not in user_options or user_options['container'] == "":
+         self.user_options['container'] = self.defaults('container')
 
    def validate_useroptions(self, opts):
       """
@@ -393,6 +418,23 @@ class VirgoSpawner(Spawner):
             if not isinstance(opt, bool):
                failed_items.append(item)
                validation_errors.append("Invalid option for GPU request (true or false)")
+         elif 'partition' in item:
+            if not options_whitelist.match(str(opt)):
+               failed_items.append(item)
+               validation_errors.append(f"Invalid characters in option for {item}")
+               break
+            if not opt in self.slurm_partition_options:
+               failed_items.append(item)
+               validation_errors.append(f"Partition name not found in defined parition list: {', '.join(str(partition) for partition in self.slurm_partition_options)}")
+         elif 'container' in item:
+            if not options_whitelist.match(str(opt)):
+               failed_items.append(item)
+               validation_errors.append(f"Invalid characters in option for {item}")
+               break
+            if not opt in self.apptainer_paths.keys():
+               failed_items.append(item)
+               validation_errors.append(f"Container name not found in defined container list: {', '.join(str(key) for key in self.apptainer_paths.keys())}")
+         #Fallthrough for string options not explicitly handled by other checks
          elif not options_whitelist.match(str(opt)):
             failed_items.append(item)
             validation_errors.append(f"Invalid characters in option for {item}")
