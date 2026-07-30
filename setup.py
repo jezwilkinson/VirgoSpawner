@@ -32,7 +32,9 @@ setup(
    entry_points={
       'jupyterhub.spawners': [
          'virgoservice = virgospawner:VirgoSpawner',
-         'sshservice = virgospawner:SSHSpawner',
+      ],
+      'jupyterhub.authenticators': [
+         'virgoauthhelper = virgospawner:VirgoAuthHelper'
       ]
    },
 )
