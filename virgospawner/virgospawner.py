@@ -1,5 +1,6 @@
 
 from jupyterhub.spawner import Spawner
+from jupyterhub.utils import can_connect
 from traitlets import Bool, Dict, Integer, List, Unicode, default
 from tornado import web
 import asyncssh
@@ -305,7 +306,14 @@ class VirgoSpawner(Spawner):
       return (self.slurm_job_hostname, self.slurm_job_hostport)
 
    async def poll(self): # TODO (return "None" if running; cleanup and other exit code if not)
-      return None
+      """
+      Check whether job's hostname:port can be resolved (returns None if working), using "can_connect" from jupyterhub.utils.
+      If connection fails, assume remote job has ended and return error status (1).
+      """
+      if can_connect(self.slurm_job_hostname, self.slurm_job_hostport):
+         return None
+      else:
+         return 1
 
    async def stop(self, now=False):
       """
