@@ -12,7 +12,7 @@ setup(
    author="Jeremy Wilkinson",
    author_email="j.wilkinson@gsi.de",
    license="BSD",
-   version="0.1.4",
+   version="0.1.5",
    platforms="Linux",
    keywords=["Jupyter"],
    classifiers=[
