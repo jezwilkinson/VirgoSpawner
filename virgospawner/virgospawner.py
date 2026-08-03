@@ -350,6 +350,10 @@ class VirgoSpawner(Spawner):
       state = super().get_state()
       if self.slurm_job_id:
          state['slurm_job_id'] = self.slurm_job_id
+      if self.slurm_job_hostname:
+         state['slurm_job_hostname'] = self.slurm_job_hostname
+      if self.slurm_job_hostport:
+         state['slurm_job_hostport'] = self.slurm_job_hostport
       return state
 
    def load_state(self, state):
@@ -357,11 +361,17 @@ class VirgoSpawner(Spawner):
       super().load_state(state)
       if 'slurm_job_id' in state:
          self.slurm_job_id = state['slurm_job_id']
+      if 'slurm_job_hostname' in state:
+         self.slurm_job_hostname = state['slurm_job_hostname']
+      if 'slurm_job_hostport' in state:
+         self.slurm_job_hostport = state['slurm_job_hostport']
 
    def clear_state(self):
       """Clear current state after shutdown"""
       super().clear_state()
       self.slurm_job_id = 0
+      self.slurm_job_hostname = ''
+      self.slurm_job_hostport = 0
       self.spawn_progress_events = []
 
    def apply_user_options(self, spawner, user_options):
