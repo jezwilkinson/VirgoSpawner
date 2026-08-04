@@ -161,21 +161,23 @@ class VirgoSpawner(Spawner):
       </div>
       """
       
-
-   def options_from_form(self, formdata):
-      """
-      Parse options from user web form.
-      """
-      options = {}
-      options['reservation'] = formdata['reservation'][0].strip()
-      options['partition'] = formdata['partition'][0].strip()
-      options['workdir'] = formdata['workdir'][0].strip()
-      options['req_gpu'] = bool(int(formdata['req_gpu'][0]))
-      options['num_cpus'] = int(formdata['num_cpus'][0].strip() or self.slurm_default_num_cpus)
-      options['container'] = formdata['container'][0].strip()
-      self.validate_useroptions(options)
-
-      return options
+   @default("options_from_form")
+   def _default_options_from_form(formdata):
+      def options_from_form(formdata,spawner):
+         """
+         Parse options from user web form. Should be redefined in JupyterHub config if any of the default user options are missing from the configured web form.
+         """
+         options = {}
+         options['reservation'] = formdata['reservation'][0].strip()
+         options['partition'] = formdata['partition'][0].strip()
+         options['workdir'] = formdata['workdir'][0].strip()
+         options['req_gpu'] = bool(int(formdata['req_gpu'][0]))
+         options['num_cpus'] = int(formdata['num_cpus'][0].strip() or self.slurm_default_num_cpus)
+         options['container'] = formdata['container'][0].strip()
+         # Ensure running validate method here, to avoid faulty values being committed to DB
+         spawner.validate_useroptions(options)
+         return options
+      return options_from_form
 
    def defaults(self, key):
       default_val = {
