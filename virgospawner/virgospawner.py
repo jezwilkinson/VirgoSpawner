@@ -493,15 +493,22 @@ class VirgoSpawner(Spawner):
       try:
          async with await self.connect_ssh() as conn:
             # Create target directory for SSL certs and ensure it is only user-accessible
-            try: 
-               result = await conn.run(f"mkdir -p \"{remote_cert_dir}\"; chmod 0700 \"{remote_cert_dir}\";")
-            except Exception as e:
-               self.log.error(f"Singleuser server for user {ssh_username} failed to start: Failure while running mkdir command. Exception {type(e).__name__}, arguments: {e.args}")
+            try:
+               # Ensure that the target directory is on the correct prefix, and not a symlink to elsewhere
+               if self.workdir_required_prefix:
+                  pathcheck = await conn.run(f"realpath -m \"{remote_cert_dir}\" | grep -e \"^{self.workdir_required_prefix}\"")
+                  if pathcheck.exit_status != 0:
+                     self.log.error(f"Singleuser server for user {ssh_username} failed: realpath of working directory did not match required prefix {self.workdir_required_prefix}")
+                     raise web.HTTPError(400, f"Working directory must begin with {self.workdir_required_prefix}. Symbolic links to other filesystems are not supported.")
+               # Create the directory and set it to "only owner can read"
+               makedir = await conn.run(f"mkdir -p \"{remote_cert_dir}\"; chmod 0700 \"{remote_cert_dir}\";")
+               if makedir.exit_status != 0:
+                  self.log.error(f"Singleuser server for user {ssh_username} failed to start: Could not create directory {remote_cert_dir} for internal SSL certificates")
+                  raise web.HTTPError(400, f"Failed to initialise working directory. Please check that you have permissions to write to {workdir}, or specify a different path.")
+            # Fall through for SSH exceptions
+            except asyncssh.Error as e:
+               self.log.error(f"Singleuser server for user {ssh_username} failed to start: SSH failure while running mkdir command. Exception {type(e).__name__}, arguments: {e.args}")
                raise web.HTTPerror(400, f"Failed to connect to job submitter node as user {ssh_username}.")
-            status = result.exit_status
-            if status != 0:
-               self.log.error(f"Singleuser server for user {ssh_username} failed to start: Could not create directory {remote_cert_dir} for internal SSL certificates")
-               raise web.HTTPError(400, f"Failed to initialise working directory. Please check that you have permissions to write to {workdir}, or specify a different path.")
             # Copy locally generated cert/key to server ("preserve" to keep proper permission modes)
             try: await asyncssh.scp(paths.values(), (conn, remote_cert_dir), preserve = True)
             except asyncssh.SFTPError as exc:
