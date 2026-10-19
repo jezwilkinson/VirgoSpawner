@@ -45,6 +45,11 @@ class VirgoSpawner(Spawner):
       help="Maximum number of CPUs that the user can request",
       config=True)
 
+# Time limit for running jobs
+   slurm_max_requestable_duration = Integer(8,
+      help="Maximum duration of jobs submitted to the service (hours)",
+      config=True)
+
 # Default values for user-addressable job options
 
    slurm_chgroup = Unicode("",
@@ -53,6 +58,10 @@ class VirgoSpawner(Spawner):
 
    slurm_default_args = Unicode("",
       help="Default additional arguments to pass to Slurm job allocation",
+      config=True)
+
+   slurm_default_duration=Integer(0,
+      help="Default job duration (hours). A value of 0 will use the requested partition's default time limit.",
       config=True)
 
    slurm_default_gpu = Bool(False,
@@ -107,6 +116,7 @@ class VirgoSpawner(Spawner):
       """
       newline = '\n'
       maxcpu = self.slurm_max_requestable_CPUs
+      maxduration = self.slurm_max_requestable_duration
       if 'partition' in self.user_options:
          default_partition = self.user_options['partition']
       else:
@@ -123,6 +133,10 @@ class VirgoSpawner(Spawner):
          default_container = self.user_options['container']
       else:
          default_container = ""
+      if 'duration' in self.user_options:
+         default_duration = self.user_options['duration']
+      else:
+         default_duration = self.slurm_default_duration
       return f"""
 
       <div class="form-group">
@@ -156,6 +170,11 @@ class VirgoSpawner(Spawner):
       </div>
       <br />
       <div class="form-group">
+         <label for="duration">Duration of the job (in hours). "0" will use the partition's default time limit.</label>
+         <input name="duration" class="form-control" type="number" value="{default_duration}" min="0" max="{maxduration}" onkeyup="if(value>{maxduration}) value = {maxduration}; if(value<0) value=0" required/>
+      </div>
+      <br />
+      <div class="form-group">
          <label for="num_cpus">Number of CPUs to assign to job / Anzahl Prozessoren (1-{maxcpu})</label>
          <input name="num_cpus" class="form-control" type="number" value="1" min="1" max="{maxcpu}" onkeyup="if(value>{maxcpu}) value = {maxcpu}; if(value<0 || value == '0') value=1" required/>
       </div>
@@ -168,11 +187,12 @@ class VirgoSpawner(Spawner):
          Parse options from user web form. Should be redefined in JupyterHub config if any of the default user options are missing from the configured web form.
          """
          options = {}
+         options['duration'] = int(formdata['duration'][0].strip() or spawner.slurm_default_duration)
          options['reservation'] = formdata['reservation'][0].strip()
          options['partition'] = formdata['partition'][0].strip()
          options['workdir'] = formdata['workdir'][0].strip()
          options['req_gpu'] = bool(int(formdata['req_gpu'][0]))
-         options['num_cpus'] = int(formdata['num_cpus'][0].strip() or self.slurm_default_num_cpus)
+         options['num_cpus'] = int(formdata['num_cpus'][0].strip() or spawner.slurm_default_num_cpus)
          options['container'] = formdata['container'][0].strip()
          # Ensure running validate method here, to avoid faulty values being committed to DB
          spawner.validate_useroptions(options)
@@ -181,6 +201,7 @@ class VirgoSpawner(Spawner):
 
    def defaults(self, key):
       default_val = {
+         "duration": self.slurm_default_duration,
          "reservation": self.slurm_default_reservation,
          "partition": self.slurm_default_partition,
          "workdir": self.slurm_default_working_directory,
@@ -203,6 +224,7 @@ class VirgoSpawner(Spawner):
       num_cpus = self.user_options['num_cpus']
       req_gpu = self.user_options['req_gpu']
       container = self.user_options['container']
+      duration = self.user_options['duration']
 
       slurm_default_args = self.slurm_default_args
       ssh_username = self.user.name
@@ -227,6 +249,8 @@ class VirgoSpawner(Spawner):
          slurmscript_salloc += f" --reservation={reservation}"
       if req_gpu:
          slurmscript_salloc += f" {self.slurm_gpu_reservation_args}"
+      if duration > 0:
+         slurmscript_salloc += f" --time={duration}:00:00"
       if slurm_default_args:
          slurmscript_salloc += f" {slurm_default_args}"
       if self.slurm_chgroup: # terminate chgroup command if invoked
@@ -307,7 +331,7 @@ class VirgoSpawner(Spawner):
          raise web.HTTPError(500, f"Connection to Slurm submitter node failed while starting server: {e.reason}")
       return (self.slurm_job_hostname, self.slurm_job_hostport)
 
-   async def poll(self): # TODO (return "None" if running; cleanup and other exit code if not)
+   async def poll(self):
       """
       Check whether job's hostname:port can be resolved (returns None if working), using "can_connect" from jupyterhub.utils.
       If connection fails, assume remote job has ended and return error status (1).
@@ -396,6 +420,8 @@ class VirgoSpawner(Spawner):
          self.user_options['req_gpu'] = self.defaults('req_gpu')
       if 'container' not in user_options or user_options['container'] == "":
          self.user_options['container'] = self.defaults('container')
+      if 'duration' not in user_options or user_options['duration'] == None:
+         self.user_options['duration'] = self.defaults('duration')
 
    def validate_useroptions(self, opts):
       """
@@ -420,12 +446,16 @@ class VirgoSpawner(Spawner):
             if not isinstance(opt, int) or opt > self.slurm_max_requestable_CPUs or opt < 1:
                failed_items.append(item)
                validation_errors.append(f"Invalid number of CPUs given (must be between 1-{self.slurm_max_requestable_CPUs})")
+         elif 'duration' in item:
+            if not isinstance(opt, int) or opt > self.slurm_max_requestable_duration or opt < 0:
+               failed_items.append(item)
+               validation_errors.append(f"Invalid duration given (must be between 0-{self.slurm_max_requestable_duration} hours)")
          elif 'workdir' in item:
             workdir_ok = True
             # For workdir: check that there are no invalid characters; string is not empty; required mount point is used if configured by admin
             if (not pathspec_whitelist.match(str(opt)) or traversal.findall(str(opt))):
                workdir_ok = False
-               validation_errors.append("Working directory path contains invalid characters.")
+               validation_errors.append("Working directory path contains invalid characters")
             if (opt == ""):
                workdir_ok = False
                validation_errors.append("Working directory must not be blank")
