@@ -257,7 +257,7 @@ class VirgoSpawner(Spawner):
          slurmscript_salloc += "\""
       slurmscript_salloc += "; "
       slurmscript_salloc += "if [ $? != 0 ]; then exit 1; fi ; " ##  check return code from salloc ; if error in allocation, quit here
-      slurmscript_salloc += "QUEUE=$(squeue -u ${USER} -o '%i %N' -S +i | tail -n 1); " ## retrieve last job ID for user
+      slurmscript_salloc += "QUEUE=$(squeue -u ${USER} -o '%i %N' -n jupyterhub_alloc -S +i --noheader | tail -n 1); " ## retrieve last job ID for user
       slurmscript_salloc += "JOBID=$(cut -d' ' -f1 <<< $QUEUE); "
       slurmscript_salloc += "HOSTNAME=$(cut -d' ' -f2 <<< $QUEUE); "
       slurmscript_salloc += "echo $JOBID $HOSTNAME;"
@@ -348,7 +348,7 @@ class VirgoSpawner(Spawner):
       jobid = self.slurm_job_id
       if jobid == 0:
       # Try to recover job ID and cancel it (in case allocation timed out during startup and didn't report the ID back)
-         slurmscript_scancel = "JOBID=$(squeue -u ${USER} -n jupyterhub_alloc -o '%i' -S +i | tail -n 1); " ## retrieve last job ID for user
+         slurmscript_scancel = "JOBID=$(squeue -u ${USER} -n jupyterhub_alloc -o '%i' -S +i --noheader | tail -n 1); " ## retrieve last job ID for user
          slurmscript_scancel += "if [ ! -z ${JOBID} ]; then scancel ${JOBID}; fi;"
       else:
          slurmscript_scancel = f"scancel {jobid}"
