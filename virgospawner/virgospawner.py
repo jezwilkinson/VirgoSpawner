@@ -345,31 +345,22 @@ class VirgoSpawner(Spawner):
       """
       Terminate the remote process and clear up the spawner state. By default, "scancel" to the allocated process will send signal 15 (sigterm)
       """
-      status = await(self.send_slurm_command("scancel"))
-      self.clear_state()
+      jobid = self.slurm_job_id
+      if jobid == 0:
+      # Try to recover job ID and cancel it (in case allocation timed out during startup and didn't report the ID back)
+         slurmscript_scancel = "JOBID=$(squeue -u ${USER} -n jupyterhub_alloc -o '%i' -S +i | tail -n 1); " ## retrieve last job ID for user
+         slurmscript_scancel += "if [ ! -z ${JOBID} ]; then scancel ${JOBID}; fi;"
+      else:
+         slurmscript_scancel = f"scancel {jobid}"
+      async with await self.connect_ssh() as conn:
+         try:
+            status = await(self.send_ssh_command(conn, slurmscript_scancel))
+         except asyncssh.Error as e:
+            self.log.error(f"SSH error while stopping job for user {self.user.name}. Reason: {e.reason}.")
+         finally:
+            self.clear_state()
+            conn.close()
       return
-   
-   async def send_slurm_command(self, command):
-      """
-      Send a SLURM command to the process (used by poll() and stop())
-      """
-      ssh_username = self.user.name
-      if self.slurm_job_id == 0: # Job ID does not exist; do nothing
-         self.log.error(f"send_slurm_command: {ssh_username}'s server tried to send '{command}' to undefined job")
-         return True
-      try:
-         async with await self.connect_ssh() as conn:
-            result = await conn.run("%s %d" % (command, self.slurm_job_id))
-            stdout = result.stdout
-            stderr = result.stderr
-            retcode = result.exit_status
-      except asyncssh.Error as e:
-         self.log.error(f"SSH error: Failed to connect to Slurm node while sending {command} to job {self.slurm_job_id} for user {ssh_username}: {e.reason}")
-         raise web.HTTPError(500, f"Failed to connect to job submitter node as user {ssh_username}: {e.reason}") 
-      self.log.debug(f"sending command {command} to job {self.slurm_job_id} for user {ssh_username} returned {retcode} --- {stdout} --- {stderr}")         
-      
-      return (retcode == 0)
-
 
    def get_state(self):
       """Get current state"""
