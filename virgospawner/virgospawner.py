@@ -335,8 +335,9 @@ class VirgoSpawner(Spawner):
       """
       Check whether job's hostname:port can be resolved (returns None if working), using "can_connect" from jupyterhub.utils.
       If connection fails, assume remote job has ended and return error status (1).
+      If job is 'pending' (during spawn) treat as "running" so that a spawn timeout calls stop()
       """
-      if can_connect(self.slurm_job_hostname, self.slurm_job_hostport):
+      if self.pending or can_connect(self.slurm_job_hostname, self.slurm_job_hostport):
          return None
       else:
          return 1
