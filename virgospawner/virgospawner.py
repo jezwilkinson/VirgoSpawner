@@ -238,7 +238,7 @@ class VirgoSpawner(Spawner):
       = Step 1 of job: srun --jobid {JOBID} /path/to/jupyterhub-singleuser : Actually run the server (having passed the hostname and port to the jupyterhub URL variable)
       """
       slurmscript_salloc = "unset SSH_ORIGINAL_COMMAND; "
-      slurmscript_salloc += f"export WORKDIR='{workdir}' JUPYTERHUB_CONTAINER={self.apptainer_paths[container]} NUM_CPUS={num_cpus}; " # export PARTITION={partition}; export RESERVATION={reservation};
+      slurmscript_salloc += f"export JUPYTERHUB_WORK_DIR='{workdir}' JUPYTERHUB_CONTAINER={self.apptainer_paths[container]} NUM_CPUS={num_cpus}; " # export PARTITION={partition}; export RESERVATION={reservation};
       if self.slurm_chgroup: # DEBUG: Switch GID for allocation if required
          slurmscript_salloc += f"sg {self.slurm_chgroup} -c \""
 
@@ -292,7 +292,7 @@ class VirgoSpawner(Spawner):
             # Job Step 1
             # Load JupyterHub environment variables as inputs to srun
             env = super(VirgoSpawner, self).get_env()
-            slurmscript_singleuser = f"export WORKDIR={workdir} JOBID={job_id} JUPYTERHUB_SINGLEUSER_PATH={self.singleuser_path} JUPYTERHUB_CONTAINER={self.apptainer_paths[container]}; "
+            slurmscript_singleuser = f"export JUPYTERHUB_WORK_DIR={workdir} JOBID={job_id} JUPYTERHUB_SINGLEUSER_PATH={self.singleuser_path} JUPYTERHUB_CONTAINER={self.apptainer_paths[container]}; "
             slurmscript_singleuser += "RET=$("
 
             for item in env.items():
@@ -300,17 +300,17 @@ class VirgoSpawner(Spawner):
                   slurmscript_singleuser += " %s='%s' " % item
             slurmscript_singleuser += f" JUPYTERHUB_SERVICE_URL=https://0.0.0.0:{self.slurm_job_hostport}/user/${self.user.name}/ "
             # Additional variables for Jupyter runtime to avoid trying to use home dir
-            slurmscript_singleuser += "JUPYTER_DATA_DIR=\"${WORKDIR}/.jupy/data\" "
-            slurmscript_singleuser += "JUPYTER_CONFIG_DIR=\"${WORKDIR}/.jupy/conf\" "
+            slurmscript_singleuser += "JUPYTER_DATA_DIR=\"${JUPYTERHUB_WORK_DIR}/.jupy/data\" "
+            slurmscript_singleuser += "JUPYTER_CONFIG_DIR=\"${JUPYTERHUB_WORK_DIR}/.jupy/conf\" "
 
-            slurmscript_singleuser += "srun --output=\"${WORKDIR}/.jupy/jupy_out.out\" --chdir=\"${WORKDIR}\"  --jobid=$JOBID --job-name='jupyterhub_session' -- "
+            slurmscript_singleuser += "srun --output=\"${JUPYTERHUB_WORK_DIR}/.jupy/jupy_out.out\" --chdir=\"${JUPYTERHUB_WORK_DIR}\"  --jobid=$JOBID --job-name='jupyterhub_session' -- "
             slurmscript_singleuser += "/usr/bin/apptainer exec -B /tmp -B /lustre ${JUPYTERHUB_CONTAINER} ${JUPYTERHUB_SINGLEUSER_PATH}/jupyterhub-singleuser --no-browser "
             if self.singleuser_config_path:
                slurmscript_singleuser += f"--config {self.singleuser_config_path} "
             if self.singleuser_extra_args:
                for arg in self.singleuser_extra_args:
                   slurmscript_singleuser += f"{arg} "
-            slurmscript_singleuser += ">> \"${WORKDIR}/.jupy/jupyterlog.log\" 2>&1 & ); "
+            slurmscript_singleuser += ">> \"${JUPYTERHUB_WORK_DIR}/.jupy/jupyterlog.log\" 2>&1 & ); "
             slurmscript_singleuser += "sleep 5; "
             slurmscript_singleuser += "STATUS=$(squeue --step \"${JOBID}.1\" | grep ${JOBID}); "      # Check that the job step containing the server didn't immediately fail
             slurmscript_singleuser += "if [ \"$STATUS\" == \"\" ]; then scancel $JOBID; exit 3; fi; " # Tear down allocation if creation of single-user notebook failed
