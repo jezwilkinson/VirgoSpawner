@@ -301,7 +301,7 @@ class VirgoSpawner(Spawner):
             slurmscript_singleuser += f" JUPYTERHUB_SERVICE_URL=https://0.0.0.0:{self.slurm_job_hostport}/user/${self.user.name}/ "
             # Additional variables for Jupyter runtime to avoid trying to use home dir
             slurmscript_singleuser += "JUPYTER_DATA_DIR=\"${JUPYTERHUB_WORK_DIR}/.jupy/data\" "
-            slurmscript_singleuser += "JUPYTER_CONFIG_DIR=\"${JUPYTERHUB_WORK_DIR}/.jupy/conf\" "
+            slurmscript_singleuser += "JUPYTERLAB_SETTINGS_DIR=\"${JUPYTERHUB_WORK_DIR}/.jupy/settings\" "
 
             slurmscript_singleuser += "srun --output=\"${JUPYTERHUB_WORK_DIR}/.jupy/jupy_out.out\" --chdir=\"${JUPYTERHUB_WORK_DIR}\"  --jobid=$JOBID --job-name='jupyterhub_session' -- "
             slurmscript_singleuser += "/usr/bin/apptainer exec -B /tmp -B /lustre ${JUPYTERHUB_CONTAINER} ${JUPYTERHUB_SINGLEUSER_PATH}/jupyterhub-singleuser --no-browser "
